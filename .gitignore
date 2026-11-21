@@ -1,0 +1,48 @@
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+linux/flutter/ephemeral/
+*.iml
+.idea/
+
+# Local credentials.
+/.aws/
+.env
+.env.*
+!.env.example
+!.env.sample
+credentials.json
+secrets.json
+secrets.yaml
+secrets.yml
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+
+# Local logs, editor files and platform caches.
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.pub/
+.pub-cache/
+coverage/
+linux/flutter/generated_config.cmake
+
+# The local library contains private filesystem paths and belongs in app data.
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+shared_preferences.json
+
+# Private metadata backups and temporary audio copies.
+.musani-edit-*/

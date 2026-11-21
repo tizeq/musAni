@@ -1,0 +1,34 @@
+name: musani
+description: Offline local music player.
+publish_to: none
+version: 0.1.0-alpha.1+1
+environment:
+  sdk: '>=3.13.0 <4.0.0'
+  flutter: '>=3.47.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  material_ui: 1.11.0
+  file_selector: 1.1.0
+  media_kit: 1.2.6
+  media_kit_libs_audio: 1.0.7
+  shared_preferences: 2.5.6
+  flutter_taglib: 1.6.0
+  sqlite3: 2.9.4
+  path_provider: 2.1.6
+  path: 1.9.1
+  crypto: 3.0.8
+  ffi: 2.2.0
+  image: 4.12.0
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  shared_preferences_platform_interface: 2.4.2
+  shared_preferences_linux: 2.4.1
+  path_provider_linux: 2.2.2
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/atmosphere/aurora.webp
