@@ -19,7 +19,7 @@ class AlbumArtwork extends StatelessWidget {
     final pixels = displaySize * pixelRatio;
     // A few shared sizes let neighboring views reuse the decoded image cache
     // and keep small window resizes from decoding all visible covers again.
-    const widths = [96, 128, 192, 256, 384, 448, 512];
+    const widths = [48, 64, 96, 128, 192, 256, 384, 448, 512];
     return widths.firstWhere((width) => pixels <= width, orElse: () => 512);
   }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../files/local_tracks.dart';
@@ -5,7 +7,14 @@ import 'library_repository.dart';
 import 'models.dart';
 
 class LibraryController extends ChangeNotifier {
-  LibraryController(this.repository);
+  LibraryController(this.repository) {
+    _albumChanges = repository.albumChanges.listen((_) {
+      if (_disposed) return;
+      catalogRevision++;
+      unawaited(load());
+    });
+  }
+  late final StreamSubscription<String> _albumChanges;
   final LibraryRepository repository;
   LibraryStatus status = const LibraryStatus();
   LibraryQuery query = const LibraryQuery();
@@ -21,7 +30,10 @@ class LibraryController extends ChangeNotifier {
 
   LocalTrack labelsFor(LocalTrack track) =>
       _editedLabels[track.uri.toFilePath()] ?? track;
-  ScanProgress? progress;
+  final _scanProgress = ValueNotifier<ScanProgress?>(null);
+  ValueListenable<ScanProgress?> get scanProgress => _scanProgress;
+  ScanProgress? get progress => _scanProgress.value;
+  set progress(ScanProgress? value) => _scanProgress.value = value;
   ScanReport? lastReport;
   String? error;
   int _request = 0;
@@ -131,8 +143,7 @@ class LibraryController extends ChangeNotifier {
       lastReport = await repository.scan(
         addRoot: addRoot,
         onProgress: (value) {
-          progress = value;
-          _notify();
+          if (!_disposed) progress = value;
         },
       );
       catalogRevision++;
@@ -161,6 +172,8 @@ class LibraryController extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _request++;
+    unawaited(_albumChanges.cancel());
+    _scanProgress.dispose();
     super.dispose();
   }
 

@@ -10,11 +10,13 @@ import 'package:sqlite3/sqlite3.dart';
 
 import '../files/local_tracks.dart';
 import '../metadata/tag_values.dart';
+import '../metadata/track_editor.dart';
 import 'metadata_reader.dart';
 import 'models.dart';
 import '../playlists/models.dart';
 
 part '../playlists/playlist_database.dart';
+part '../playlists/user_album_database.dart';
 
 // Each repository worker has its own isolate and SQLite loader.
 final _catalogSqlite = _loadCatalogSqlite();
@@ -29,7 +31,7 @@ Sqlite3 _loadCatalogSqlite() {
 
 /// Synchronous SQLite/TagLib work belongs to the repository's worker isolates.
 class LibraryDatabase {
-  static const _schemaVersion = 5;
+  static const _schemaVersion = 6;
 
   LibraryDatabase(String databasePath, this.coverDirectory)
     : _db = _catalogSqlite.open(databasePath) {
@@ -37,6 +39,13 @@ class LibraryDatabase {
     _db.execute('PRAGMA busy_timeout = 5000');
     _db.execute('PRAGMA journal_mode = WAL');
     try {
+      _db.createFunction(
+        functionName: 'musani_lower',
+        argumentCount: const AllowedArgumentCount(1),
+        deterministic: true,
+        directOnly: false,
+        function: (args) => (args[0] as String).toLowerCase(),
+      );
       var version = _db.select('PRAGMA user_version').first.values.first as int;
       if (version > _schemaVersion)
         throw StateError('Каталог создан более новой версией musAni');
@@ -94,7 +103,11 @@ class LibraryDatabase {
             _createPlaylistArtwork();
             version = 4;
           }
-          if (version == 4) _addPlaylistAlbumFlag();
+          if (version == 4) {
+            _addPlaylistAlbumFlag();
+            version = 5;
+          }
+          if (version == 5) _createUserAlbums();
           _db.execute('COMMIT');
         } catch (_) {
           _db.execute('ROLLBACK');
@@ -108,25 +121,62 @@ class LibraryDatabase {
   }
 
   final Database _db;
+  bool albumChanged = false;
+
+  bool get _hasUserAlbums =>
+      _count(
+        'SELECT EXISTS(SELECT 1 FROM playlists WHERE is_album=1 AND deleted_at IS NULL)',
+      ) !=
+      0;
+  bool get _hasUserAlbumMembers =>
+      _count('SELECT EXISTS(SELECT 1 FROM user_album_members)') != 0;
+
+  String get _trackSource {
+    if (!_hasUserAlbumMembers) return 'tracks';
+    final hasExternal =
+        _count('''
+      SELECT EXISTS(SELECT 1 FROM user_album_members m
+        WHERE NOT EXISTS(SELECT 1 FROM tracks t WHERE t.path=m.path))
+    ''') !=
+        0;
+    return hasExternal ? 'user_album_tracks' : 'user_album_indexed_tracks';
+  }
+
+  String get _pointTrackSource =>
+      _hasUserAlbumMembers ? 'user_album_tracks' : 'tracks';
+  String _artistSource(String source) =>
+      source == 'user_album_tracks' ? 'user_album_artists' : 'track_artists';
+
+  String _readArtists(String tracks) => tracks != 'user_album_tracks'
+      ? _trackArtistsJson
+      : '''
+    CASE WHEN t.id > 0 THEN $_trackArtistsJson ELSE (
+      SELECT artists FROM playlist_entries WHERE rowid=-t.id
+    ) END
+  ''';
+
   final String coverDirectory;
   void close() => _db.dispose();
 
-  LibraryStatus status() => LibraryStatus(
-    roots: [
-      for (final row in _db.select('SELECT * FROM roots ORDER BY path'))
-        LibraryRoot(
-          row['id'] as int,
-          row['path'] as String,
-          row['last_scan'] as int?,
-          row['error'] as String?,
-        ),
-    ],
-    trackCount: _count('SELECT COUNT(*) FROM tracks'),
-    albumCount: _count(
-      "SELECT COUNT(DISTINCT NULLIF(album_id,'')) FROM tracks WHERE album_tagged=1",
-    ),
-    artistCount: _count('SELECT COUNT(DISTINCT artist_key) FROM track_artists'),
-  );
+  LibraryStatus status() {
+    final tracks = _trackSource;
+    final artists = _artistSource(tracks);
+    return LibraryStatus(
+      roots: [
+        for (final row in _db.select('SELECT * FROM roots ORDER BY path'))
+          LibraryRoot(
+            row['id'] as int,
+            row['path'] as String,
+            row['last_scan'] as int?,
+            row['error'] as String?,
+          ),
+      ],
+      trackCount: _count('SELECT COUNT(*) FROM $tracks'),
+      hasUserAlbums: _hasUserAlbums,
+      albumCount: _catalogAlbumCount(tracks != 'tracks') + _userAlbumCount,
+      artistCount: _count('SELECT COUNT(DISTINCT artist_key) FROM $artists'),
+    );
+  }
 
   int _count(String sql, [List<Object?> parameters = const []]) =>
       _db.select(sql, parameters).first.values.first as int;
@@ -134,6 +184,7 @@ class LibraryDatabase {
   void removeRoot(int id) {
     _db.execute('BEGIN IMMEDIATE');
     try {
+      _ensureTrackRootsIndex();
       _db.execute('DELETE FROM roots WHERE id = ?', [id]);
       _pruneOrphans();
       _db.execute('COMMIT');
@@ -141,6 +192,14 @@ class LibraryDatabase {
       _db.execute('ROLLBACK');
       rethrow;
     }
+  }
+
+  void _ensureTrackRootsIndex() {
+    // The existing primary key starts with root_id. Without this reverse
+    // index, the orphan check and foreign-key deletes scan track_roots per track.
+    _db.execute(
+      'CREATE INDEX IF NOT EXISTS track_roots_track ON track_roots(track_id)',
+    );
   }
 
   int _pruneOrphans() {
@@ -195,6 +254,13 @@ class LibraryDatabase {
       progress(path, force: true);
       var complete = true;
       String? rootError;
+      final findTrack = _db.prepare(
+        'SELECT id,size,modified_us,changed_us,cover_key FROM tracks WHERE path=?',
+      );
+      final markSeen = _db.prepare('INSERT OR IGNORE INTO seen(id) VALUES (?)');
+      final linkRoot = _db.prepare(
+        'INSERT OR IGNORE INTO track_roots(root_id,track_id) VALUES (?,?)',
+      );
       _db.execute('BEGIN IMMEDIATE');
       try {
         _db.execute('DELETE FROM seen');
@@ -223,10 +289,7 @@ class LibraryDatabase {
                   'Файл исчез во время сканирования',
                   canonical,
                 );
-              final rows = _db.select(
-                'SELECT id,size,modified_us,changed_us,cover_key FROM tracks WHERE path = ?',
-                [canonical],
-              );
+              final rows = findTrack.select([canonical]);
               final old = rows.firstOrNull;
               final coverKey = old?['cover_key'] as String?;
               int trackId;
@@ -261,13 +324,8 @@ class LibraryDatabase {
                 if (metadata.warning != null)
                   warn('${p.basename(canonical)}: ${metadata.warning}');
               }
-              _db.execute('INSERT OR IGNORE INTO seen(id) VALUES (?)', [
-                trackId,
-              ]);
-              _db.execute(
-                'INSERT OR IGNORE INTO track_roots(root_id,track_id) VALUES (?,?)',
-                [rootId, trackId],
-              );
+              markSeen.execute([trackId]);
+              linkRoot.execute([rootId, trackId]);
             } on FileSystemException catch (error) {
               complete = false;
               rootError = 'Не все файлы доступны: $error';
@@ -280,6 +338,7 @@ class LibraryDatabase {
           warn(rootError);
         }
         if (complete) {
+          _ensureTrackRootsIndex();
           _db.execute(
             'DELETE FROM track_roots WHERE root_id = ? AND track_id NOT IN (SELECT id FROM seen)',
             [rootId],
@@ -295,6 +354,10 @@ class LibraryDatabase {
       } catch (_) {
         _db.execute('ROLLBACK');
         rethrow;
+      } finally {
+        linkRoot.dispose();
+        markSeen.dispose();
+        findTrack.dispose();
       }
     }
     progress('', force: true);
@@ -466,7 +529,7 @@ class LibraryDatabase {
     );
   }
 
-  (String, List<Object?>) _filter(LibraryQuery query) {
+  (String, List<Object?>) _filter(LibraryQuery query, String artists) {
     final clauses = <String>['1=1'];
     final parameters = <Object?>[];
     if (query.search.trim().isNotEmpty) {
@@ -480,9 +543,7 @@ class LibraryDatabase {
       parameters.add('%$search%');
     }
     if (query.artistId != null) {
-      clauses.add(
-        'EXISTS (SELECT 1 FROM track_artists a WHERE a.track_id=t.id AND a.artist_key=?)',
-      );
+      clauses.add('t.id IN (SELECT track_id FROM $artists WHERE artist_key=?)');
       parameters.add(query.artistId);
     }
     if (query.albumId != null) {
@@ -512,10 +573,12 @@ class LibraryDatabase {
 
   /// A single SQLite snapshot of the full result, regardless of the UI page.
   List<LocalTrack> playbackTracks(LibraryQuery query) {
-    final (where, args) = _filter(query);
+    final tracksSource = _trackSource;
+    final artistsSource = _artistSource(tracksSource);
+    final (where, args) = _filter(query, artistsSource);
     final statement = _db.prepare('''
-      SELECT t.path, t.title, $_trackArtistsJson AS artists
-      FROM tracks t WHERE $where ORDER BY ${_trackOrder(query)}
+      SELECT t.path, t.title, ${_readArtists(tracksSource)} AS artists
+      FROM $tracksSource t WHERE $where ORDER BY ${_trackOrder(query)}
     ''');
     try {
       final rows = statement.selectCursor(args);
@@ -539,7 +602,9 @@ class LibraryDatabase {
   }
 
   LibraryResult query(LibraryQuery query) {
-    final (where, args) = _filter(query);
+    final tracksSource = _trackSource;
+    final artistsSource = _artistSource(tracksSource);
+    final (where, args) = _filter(query, artistsSource);
     final direction = query.descending ? 'DESC' : 'ASC';
     final page = [
       ...args,
@@ -549,10 +614,13 @@ class LibraryDatabase {
     switch (query.view) {
       case LibraryView.tracks:
         return LibraryResult(
-          total: _count('SELECT COUNT(*) FROM tracks t WHERE $where', args),
+          total: _count(
+            'SELECT COUNT(*) FROM ${args.isEmpty && tracksSource != 'user_album_tracks' ? 'tracks' : tracksSource} t WHERE $where',
+            args,
+          ),
           tracks: [
             for (final row in _db.select(
-              'SELECT t.* FROM tracks t WHERE $where ORDER BY ${_trackOrder(query)} LIMIT ? OFFSET ?',
+              'SELECT t.*, ${_readArtists(tracksSource)} AS artists_json FROM $tracksSource t WHERE $where ORDER BY ${_trackOrder(query)} LIMIT ? OFFSET ?',
               page,
             ))
               _track(row),
@@ -565,28 +633,48 @@ class LibraryDatabase {
           LibrarySort.year => 'year',
           LibrarySort.added => 'added_at',
         };
+        if (args.isEmpty)
+          return _unfilteredAlbums(
+            tracksSource != 'tracks',
+            sort,
+            direction,
+            page,
+          );
+        final matchingAlbums = args.isEmpty
+            ? ''
+            : 'AND album_id IN (SELECT album_id FROM $tracksSource t WHERE $where)';
+        final includeEmpty = query.artistId == null && _hasUserAlbums;
+        final emptyFilter =
+            '$_emptyUserAlbums'
+            "${query.search.trim().isEmpty ? '' : " AND p.album_search LIKE ? ESCAPE char(92)"}"
+            "${query.albumId == null ? '' : " AND 'playlist:'||p.id=?"}";
+        final emptyAlbums = includeEmpty
+            ? '''
+          UNION ALL SELECT 'playlist:'||p.id,p.name,p.album_artist,p.album_year,
+            0,0,p.album_cover_key,p.album_sort,p.album_artist_sort,p.created_at*1000
+          $emptyFilter
+        '''
+            : '';
         return LibraryResult(
-          total: _count(
-            "SELECT COUNT(DISTINCT album_id) FROM tracks t WHERE $where AND t.album_tagged=1 AND t.album_id<>''",
-            args,
-          ),
+          total:
+              _count(
+                "SELECT COUNT(DISTINCT album_id) FROM $tracksSource t WHERE $where AND t.album_tagged=1 AND t.album_id<>''",
+                args,
+              ) +
+              (includeEmpty ? _count('SELECT COUNT(*) $emptyFilter', args) : 0),
           albums: [
-            for (final row in _db.select('''
+            for (final row in _db.select(
+              '''
             SELECT album_id,MIN(album) title,MIN(album_artist) artist,MAX(year) year,
               COUNT(*) track_count,SUM(duration_ms) duration_ms,MIN(cover_key) cover_key,
               MIN(album_sort) album_sort,MIN(album_artist_sort) artist_sort,MAX(added_at) added_at
-            FROM tracks WHERE album_tagged=1 AND album_id<>'' AND album_id IN (SELECT album_id FROM tracks t WHERE $where)
-            GROUP BY album_id ORDER BY $sort $direction, album_id LIMIT ? OFFSET ?
-          ''', page))
-              LibraryAlbum(
-                id: row['album_id'] as String,
-                title: row['title'] as String,
-                artist: row['artist'] as String,
-                year: row['year'] as int,
-                trackCount: row['track_count'] as int,
-                durationMs: row['duration_ms'] as int,
-                coverKey: row['cover_key'] as String?,
-              ),
+            FROM $tracksSource WHERE album_tagged=1 AND album_id<>'' $matchingAlbums
+            GROUP BY album_id $emptyAlbums
+            ORDER BY $sort $direction, album_id LIMIT ? OFFSET ?
+          ''',
+              [...args, if (includeEmpty) ...args, ...page.skip(args.length)],
+            ))
+              _libraryAlbum(row),
           ],
         );
       case LibraryView.artists:
@@ -597,14 +685,14 @@ class LibraryDatabase {
         };
         return LibraryResult(
           total: _count(
-            'SELECT COUNT(DISTINCT a.artist_key) FROM track_artists a JOIN tracks t ON t.id=a.track_id WHERE $where',
+            'SELECT COUNT(DISTINCT a.artist_key) FROM $artistsSource a JOIN $tracksSource t ON t.id=a.track_id WHERE $where',
             args,
           ),
           artists: [
             for (final row in _db.select('''
             SELECT a.artist_key,MIN(a.name) name,COUNT(*) track_count,
               COUNT(DISTINCT CASE WHEN t.album_tagged=1 THEN NULLIF(t.album_id,'') END) album_count,MIN(t.cover_key) cover_key
-            FROM track_artists a JOIN tracks t ON t.id=a.track_id WHERE $where
+            FROM $artistsSource a JOIN $tracksSource t ON t.id=a.track_id WHERE $where
             GROUP BY a.artist_key ORDER BY $sort $direction, a.artist_key LIMIT ? OFFSET ?
           ''', page))
               LibraryArtist(
@@ -619,25 +707,128 @@ class LibraryDatabase {
     }
   }
 
-  List<LibraryTrack> albumTracks(String albumId) => [
-    for (final row in _db.select(
-      '''
-    SELECT * FROM tracks WHERE album_id=? AND album_tagged=1 AND album_id<>''
-    ORDER BY disc_number,CASE WHEN track_number=0 THEN 2147483647 ELSE track_number END,title_sort,id
+  String _originalAlbumFilter(bool hasMembers) =>
+      "album_tagged=1 AND album_id<>''" +
+      (hasMembers
+          ? ' AND NOT EXISTS (SELECT 1 FROM user_album_members m WHERE m.path=t.path)'
+          : '');
+
+  int _catalogAlbumCount(bool hasMembers) => _count(
+    'SELECT COUNT(DISTINCT album_id) FROM tracks t WHERE ${_originalAlbumFilter(hasMembers)}',
+  );
+
+  LibraryResult _unfilteredAlbums(
+    bool hasMembers,
+    String sort,
+    String direction,
+    List<Object?> page,
+  ) {
+    final custom = _hasUserAlbums
+        ? '''
+      UNION ALL
+      SELECT 'playlist:'||p.id,p.name,p.album_artist,p.album_year,
+        COUNT(m.path),COALESCE(SUM(COALESCE(t.duration_ms,e.duration_ms)),0),
+        COALESCE(p.album_cover_key,MIN(CASE WHEN t.id IS NULL THEN e.cover_key ELSE t.cover_key END)),
+        p.album_sort,p.album_artist_sort,COALESCE(MAX(COALESCE(t.added_at,e.created_at*1000)),p.created_at*1000)
+      FROM playlists p LEFT JOIN user_album_members m ON m.playlist_id=p.id
+      LEFT JOIN tracks t ON t.path=m.path LEFT JOIN playlist_entries e ON e.id=m.entry_id
+      WHERE p.is_album=1 AND p.deleted_at IS NULL GROUP BY p.id
+    '''
+        : '';
+    return LibraryResult(
+      total:
+          _catalogAlbumCount(hasMembers) +
+          (custom.isEmpty ? 0 : _userAlbumCount),
+      albums: [
+        for (final row in _db.select('''
+          SELECT album_id,MIN(album) title,MIN(album_artist) artist,MAX(year) year,
+            COUNT(*) track_count,SUM(duration_ms) duration_ms,MIN(cover_key) cover_key,
+            MIN(album_sort) album_sort,MIN(album_artist_sort) artist_sort,MAX(added_at) added_at
+          FROM tracks t WHERE ${_originalAlbumFilter(hasMembers)}
+          GROUP BY album_id $custom ORDER BY $sort $direction, album_id LIMIT ? OFFSET ?
+        ''', page))
+          _libraryAlbum(row),
+      ],
+    );
+  }
+
+  LibraryAlbum _libraryAlbum(Row row) => LibraryAlbum(
+    id: row['album_id'] as String,
+    title: row['title'] as String,
+    artist: row['artist'] as String,
+    year: row['year'] as int,
+    trackCount: row['track_count'] as int,
+    durationMs: row['duration_ms'] as int,
+    coverKey: row['cover_key'] as String?,
+  );
+
+  List<LibraryTrack> albumTracks(String albumId) {
+    final tracksSource = _trackSource;
+    final userId = albumId.startsWith('playlist:')
+        ? albumId.substring('playlist:'.length)
+        : null;
+    final scope = tracksSource == 'tracks'
+        ? ''
+        : userId == null
+        ? 'AND t.path IN (SELECT path FROM tracks WHERE album_id=?)'
+        : 'AND t.path IN (SELECT path FROM user_album_members WHERE playlist_id=?)';
+    return [
+      for (final row in _db.select(
+        '''
+    SELECT t.*, ${_readArtists(tracksSource)} AS artists_json
+    FROM $tracksSource t WHERE album_id=? AND album_tagged=1 AND album_id<>'' $scope
+    ORDER BY ${albumId.startsWith('playlist:') ? '(SELECT e.position FROM user_album_members m JOIN playlist_entries e ON e.id=m.entry_id WHERE m.path=t.path),' : ''}
+      disc_number,CASE WHEN track_number=0 THEN 2147483647 ELSE track_number END,title_sort,id
   ''',
-      [albumId],
-    ))
-      _track(row),
-  ];
+        [albumId, if (scope.isNotEmpty) userId ?? albumId],
+      ))
+        _track(row),
+    ];
+  }
 
   LibraryTrack? track(int id) {
-    final rows = _db.select('SELECT * FROM tracks WHERE id=?', [id]);
+    final tracksSource = id > 0 && _hasUserAlbumMembers
+        ? 'user_album_indexed_tracks'
+        : _pointTrackSource;
+    final rows = _db.select(
+      'SELECT t.*, ${_readArtists(tracksSource)} AS artists_json FROM $tracksSource t WHERE t.id=?',
+      [id],
+    );
     return rows.isEmpty ? null : _track(rows.first);
   }
 
   LibraryTrack? trackByPath(String path) {
-    final rows = _db.select('SELECT * FROM tracks WHERE path=?', [path]);
+    final tracksSource = _pointTrackSource;
+    final rows = _db.select(
+      'SELECT t.*, ${_readArtists(tracksSource)} AS artists_json FROM $tracksSource t WHERE t.path=?',
+      [path],
+    );
     return rows.isEmpty ? null : _track(rows.first);
+  }
+
+  Map<String, LibraryTrack> tracksByPath(List<String> paths) =>
+      _tracksByPath(paths, _pointTrackSource);
+
+  Map<String, LibraryTrack> _tracksByPath(
+    List<String> paths,
+    String tracksSource,
+  ) {
+    final matches = <String, LibraryTrack>{};
+    const batchSize = 128;
+    for (var start = 0; start < paths.length; start += batchSize) {
+      final batch = paths.sublist(
+        start,
+        (start + batchSize).clamp(0, paths.length),
+      );
+      final placeholders = List.filled(batch.length, '?').join(',');
+      for (final row in _db.select('''
+        SELECT t.*, ${_readArtists(tracksSource)} AS artists_json
+        FROM $tracksSource t WHERE t.path IN ($placeholders)
+      ''', batch)) {
+        matches[row['path'] as String] = _track(row);
+      }
+    }
+    return matches;
   }
 
   TrackMetadata reindexTrack(String path) {
@@ -667,10 +858,8 @@ class LibraryDatabase {
 
   LibraryTrack _track(Row row) {
     final properties = _properties(row['properties'] as String);
-    final artists = _db.select(
-      'SELECT name FROM track_artists WHERE track_id=? ORDER BY rowid',
-      [row['id']],
-    );
+    final artists = (jsonDecode(row['artists_json'] as String) as List)
+        .cast<String>();
     return LibraryTrack(
       id: row['id'] as int,
       path: row['path'] as String,
@@ -682,7 +871,7 @@ class LibraryDatabase {
       changedUs: row['changed_us'] as int,
       metadata: TrackMetadata(
         title: row['title'] as String,
-        artists: [for (final artist in artists) artist['name'] as String],
+        artists: artists,
         album: row['album'] as String,
         albumArtist: row['album_artist'] as String,
         year: row['year'] as int,

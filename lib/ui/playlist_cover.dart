@@ -91,13 +91,16 @@ class PlaylistCover extends StatefulWidget {
 }
 
 class _PlaylistCoverState extends State<PlaylistCover> {
-  late Future<PlaylistArtwork> _future = _load();
+  late Future<PlaylistArtwork>? _future = _load();
 
-  Future<PlaylistArtwork> _load() => widget.repository.artwork(
-    widget.playlist.id,
-    revision: widget.playlist.revision,
-    catalogRevision: widget.catalogRevision,
-  );
+  Future<PlaylistArtwork>? _load() =>
+      widget.playlist.isAlbum && widget.playlist.albumCoverKey != null
+      ? null
+      : widget.repository.artwork(
+          widget.playlist.id,
+          revision: widget.playlist.revision,
+          catalogRevision: widget.catalogRevision,
+        );
 
   @override
   void didUpdateWidget(PlaylistCover oldWidget) {
@@ -118,6 +121,16 @@ class _PlaylistCoverState extends State<PlaylistCover> {
       child: FutureBuilder<PlaylistArtwork>(
         future: _future,
         builder: (context, snapshot) {
+          if ((widget.playlist.isAlbum ? widget.playlist.albumCoverKey : null)
+              case final key?) {
+            return AlbumArtwork(
+              key: Key('playlist-custom-cover-${widget.playlist.id}'),
+              path: widget.repository.trackCoverPath(key),
+              displaySize: widget.size,
+              radius: 0,
+              placeholder: _placeholder(),
+            );
+          }
           final artwork = snapshot.data;
           if (artwork?.image case final image?) {
             return Image.memory(

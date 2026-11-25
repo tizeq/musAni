@@ -261,6 +261,16 @@ class _LibraryBrowserState extends State<_LibraryBrowser>
         : ListenableBuilder(listenable: settings, builder: (_, _) => build());
   }
 
+  Widget _scanStatus(TextStyle? style) => ValueListenableBuilder(
+    valueListenable: library.scanProgress,
+    builder: (context, progress, _) => Text(
+      'Сканирование · ${progress?.visited ?? 0} файлов · ${p.basename(progress?.path ?? '')}',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: style,
+    ),
+  );
+
   Widget _auroraStatus(AuroraAppearance appearance) {
     final report = library.lastReport;
     final error = library.error;
@@ -275,15 +285,17 @@ class _LibraryBrowserState extends State<_LibraryBrowser>
           Row(
             children: [
               Expanded(
-                child: Text(
-                  error ??
-                      (library.scanning
-                          ? 'Сканирование · ${library.progress?.visited ?? 0} файлов · ${p.basename(library.progress?.path ?? '')}'
-                          : 'Обновлено ${report!.updated} · без изменений ${report.unchanged} · удалено ${report.removed}'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: appearance.muted, fontSize: 12),
-                ),
+                child: error == null && library.scanning
+                    ? _scanStatus(
+                        TextStyle(color: appearance.muted, fontSize: 12),
+                      )
+                    : Text(
+                        error ??
+                            'Обновлено ${report!.updated} · без изменений ${report.unchanged} · удалено ${report.removed}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: appearance.muted, fontSize: 12),
+                      ),
               ),
               if (error != null)
                 TextButton(
@@ -311,6 +323,8 @@ class _LibraryBrowserState extends State<_LibraryBrowser>
       playlists: widget.playlists,
       onPlay: widget.onPlay,
       onPlayQuery: widget.onPlayQuery,
+      onPlayPlaylist: widget.onPlayPlaylist,
+      linkPicker: widget.linkPicker,
       onReveal: widget.window?.revealContent,
       frame: (tabs, content, catalogActive, activeAlbumId) => LayoutBuilder(
         builder: (context, constraints) => AuroraLibraryShell(
@@ -616,12 +630,7 @@ class _LibraryBrowserState extends State<_LibraryBrowser>
                     ),
                     child: Align(
                       alignment: Alignment.centerLeft,
-                      child: Text(
-                        'Сканирование · ${library.progress?.visited ?? 0} файлов · ${p.basename(library.progress?.path ?? '')}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall,
-                      ),
+                      child: _scanStatus(theme.textTheme.bodySmall),
                     ),
                   ),
                 ] else if (library.lastReport case final report?)
@@ -677,6 +686,8 @@ class _LibraryBrowserState extends State<_LibraryBrowser>
                           playlists: widget.playlists,
                           onPlay: widget.onPlay,
                           onPlayQuery: widget.onPlayQuery,
+                          onPlayPlaylist: widget.onPlayPlaylist,
+                          linkPicker: widget.linkPicker,
                           child: _sectionBody(compact, query, glass),
                         ),
                       ),

@@ -322,7 +322,8 @@ class _CollectionViewportState extends State<_CollectionViewport>
 
   @override
   Widget build(BuildContext context) {
-    if (widget.wide && !widget.open && _reveal.isDismissed) return widget.child;
+    // Keep the workspace under the same elements while the panel opens and
+    // closes. Reparenting it invalidates inherited dependencies in every tab.
     return LayoutBuilder(
       builder: (context, box) {
         final maxWidth = widget.wide

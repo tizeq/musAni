@@ -11,6 +11,7 @@ file_selector, JNI и остальных включённых пакетов.
 | flutter_taglib bridge 1.6.0 | Apache-2.0. Собран из [исходников bridge](https://github.com/axel10/flutter_taglib/tree/d2b7674b386583f5ef80188c3497709137dddae2). |
 | TagLib 2.3 внутри bridge | Статически включена в `lib/libflutter_taglib_native.so` по LGPL 2.1, §6(a). Использованы неизменённые [исходники TagLib v2.3](https://github.com/taglib/taglib/tree/v2.3). Исходники, объект bridge и скрипт перелинковки предоставляются с релизом. |
 | utfcpp 4.0.9 | Лицензия Boost Software License 1.0. [Исходники utfcpp v4.0.9](https://github.com/nemtrif/utfcpp/tree/v4.0.9). |
+| mimalloc 2.1.2 | MIT. Статически включён через media_kit. [Исходники mimalloc v2.1.2](https://github.com/microsoft/mimalloc/tree/v2.1.2). |
 | hls.js 1.4.10 | Apache-2.0. Поставляется как ресурс пакета media_kit. [Исходники hls.js v1.4.10](https://github.com/video-dev/hls.js/tree/v1.4.10). |
 
 Тексты этих лицензий, авторы TagLib и отдельные уведомления Flutter Engine

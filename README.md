@@ -2,7 +2,7 @@
 
 musAni is an open-source desktop player for your local music collection.
 It runs offline and stores your library, playlists, and preferences on your computer.
-The first public alpha is available for **Linux x86-64**.
+The current release is **v0.1.1** for **Linux x86-64**.
 
 ![The music library in the Atmosphere theme](docs/previews/alpha-library.png)
 
@@ -14,18 +14,20 @@ The first public alpha is available for **Linux x86-64**.
   Open albums and artists in tabs without losing your place in the library.
 - Play from any position in the current list or playlist. Use the queue, shuffle,
   or repeat a track or the whole queue.
-- Create playlists with custom artwork and drag tracks to reorder them. You can
-  mark a playlist as an album while keeping the original audio tags.
-- Edit MP3 and FLAC tags, including multiple artists and cover art. musAni
-  saves a backup before replacing a file.
+- Create playlists with custom artwork and drag tracks to reorder them.
+  Mark a playlist as an album to share artwork and metadata, number tracks,
+  and organize them across discs.
+- Edit MP3 and FLAC tags, including multiple artists and cover art. You can
+  write shared album tags to those files in one operation. musAni saves a
+  backup before replacing each file.
 - Choose Minimal or Atmosphere, a light or dark color scheme, or follow the
   system setting. Visual effects, reduced motion, and keyboard shortcuts
   are configurable.
 
 ## Install on Linux
 
-Download the Linux x86-64 archive and its `.sha256` file from
-[GitHub Releases](https://github.com/tizeq/musAni/releases).
+Download the Linux x86-64 archive from
+[GitHub Releases](https://github.com/tizeq/musAni/releases/tag/v0.1.1).
 The player needs glibc 2.34 or later, libstdc++ with `GLIBCXX_3.4.29`,
 GTK 3, libmpv, SQLite with JSON support, libcurl, and a working graphical
 and audio session.
@@ -42,20 +44,19 @@ sudo pacman -S --needed gtk3 mpv sqlite curl libglvnd mesa
 sudo apt install libgtk-3-0t64 libmpv2 libsqlite3-0 libcurl4t64 libgl1 libegl1 libgles2 libegl-mesa0 libgl1-mesa-dri
 ```
 
-From your download directory, verify the checksum and extract the whole bundle.
+From your download directory, extract the whole bundle.
 
 ```sh
-sha256sum -c musAni-v0.1.0-alpha.1-linux-x86_64.tar.gz.sha256
-tar -xzf musAni-v0.1.0-alpha.1-linux-x86_64.tar.gz
-cd musAni-v0.1.0-alpha.1-linux-x86_64
+tar -xzf musAni-v0.1.1-linux-x86_64.tar.gz
+cd musAni-v0.1.1-linux-x86_64
 ./musani
 ```
 
 Keep `musani`, `lib/`, and `data/` together. You can run the player as a regular
 user without installing the Flutter SDK. To import music, select **Добавить
-папку** (*Add folder*) and choose a directory. The alpha interface uses Russian.
+папку** (*Add folder*) and choose a directory. The interface uses Russian.
 
-## Audio formats and alpha limits
+## Audio formats and limitations
 
 - **Playback:** MP3, FLAC, M4A, OGG, WAV, and Opus. Decoding depends on your
   system's libmpv build.
@@ -65,6 +66,10 @@ user without installing the Flutter SDK. To import music, select **Добави�
 - The library, playlists, and settings survive a restart. The current
   playback queue is session-only. Library refreshes are started manually.
 - musAni plays local files. Streaming and cross-device sync are unavailable.
+- Occasional frame drops may still occur in the Atmosphere theme.
+
+See the [Linux installation and upgrade guide](docs/linux-release.md) and
+[change history](CHANGELOG.md).
 
 ## Report an issue
 

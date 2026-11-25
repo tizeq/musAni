@@ -20,13 +20,27 @@ version=$(awk '/^version: / {split($2, parts, "+"); print parts[1]}' "$source_di
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9.]+)?$ ]]
 name="musAni-v$version-linux-x86_64"
 bundle="$work/$name"
+mimalloc="$source_dir/build/linux/x64/release/mimalloc-2.1.2.tar.gz"
+if [[ -n ${MUSANI_MIMALLOC_ARCHIVE:-} ]]; then
+  # CMake still verifies the archive against the dependency's pinned checksum.
+  mkdir -p "$(dirname "$mimalloc")"
+  cp "$MUSANI_MIMALLOC_ARCHIVE" "$mimalloc"
+fi
 
 (
   cd "$source_dir"
   flutter pub get --enforce-lockfile
   flutter build linux --release --no-pub
+  flutter assemble --no-version-check --output=build \
+    -dTargetPlatform=linux-x64 -dBuildMode=release -dTargetFile=lib/main.dart \
+    -dTrackWidgetCreation=true -dTreeShakeIcons=true -dDartObfuscation=false \
+    -dFileSystemRoots="$source_dir" -dFileSystemScheme=org-dartlang-root \
+    "-dFrontendServerStarterPath=$repo/tool/linux_release_frontend.dart" \
+    release_bundle_linux-x64_assets
 )
 cp -a "$source_dir/build/linux/x64/release/bundle" "$bundle"
+cp -a "$source_dir/build/flutter_assets/." "$bundle/data/flutter_assets/"
+cp "$source_dir/build/lib/libapp.so" "$bundle/lib/libapp.so"
 
 # CMake copies these plugins straight from the build tree.
 for plugin in libfile_selector_linux_plugin.so libmedia_kit_libs_linux_plugin.so; do
@@ -44,6 +58,7 @@ cp "$source_dir/docs/linux-source-code.md" "$bundle/SOURCE-CODE.md"
 cp "$source_dir/docs/third-party-notices.md" "$bundle/THIRD-PARTY-NOTICES.md"
 cp "$source_dir/CHANGELOG.md" "$source_dir/LICENSE" "$source_dir/COPYRIGHT" "$bundle/"
 mkdir "$bundle/licenses"
+tar -xOf "$mimalloc" mimalloc-2.1.2/LICENSE > "$bundle/licenses/mimalloc-LICENSE"
 sdk=$(dirname "$(dirname "$(realpath "$(command -v flutter)")")")
 cp "$sdk/bin/cache/pkg/sky_engine/LICENSE" "$bundle/licenses/flutter-engine.txt"
 cp "$sdk/bin/cache/artifacts/material_fonts/MaterialIcons_LICENSE.txt" "$bundle/licenses/"
@@ -59,7 +74,7 @@ hls.js-LICENSE ca8773cf798c7ed997d4dd7c8e23c348699f8d5b7462636694cc14de6cda12db 
 LICENSES
 
 file "$bundle/musani" | rg -q 'ELF 64-bit.*x86-64'
-if LC_ALL=C rg -al --hidden '/(home|Users|root)/[[:alnum:]_.-]+/' "$bundle"; then
+if LC_ALL=C rg -al --hidden '/(home|Users|root)/[[:alnum:]_.-]+/|/tmp/musani-build\.' "$bundle"; then
   echo 'Bundle contains personal build paths.' >&2
   exit 1
 fi
@@ -71,5 +86,4 @@ fi
 
 tar --sort=name --numeric-owner --owner=0 --group=0 -czf "$work/$name.tar.gz" -C "$work" "$name"
 mv "$work/$name.tar.gz" "$output/$name.tar.gz"
-(cd "$output"; sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
-printf '%s\n' "$output/$name.tar.gz" "$output/$name.tar.gz.sha256"
+printf '%s\n' "$output/$name.tar.gz"

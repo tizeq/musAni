@@ -13,6 +13,7 @@ import '../playlists/models.dart';
 import '../playlists/playlist_repository.dart';
 import '../playback/playback_engine.dart';
 import 'library_page.dart';
+import 'album_artwork.dart';
 import 'library_widgets.dart' show libraryTime;
 import 'metadata_editor_dialog.dart';
 
@@ -419,124 +420,152 @@ class _PlayerPageState extends State<PlayerPage> {
         final track = widget.library?.labelsFor(queued) ?? queued;
         final selected = index == _state.index;
         final playing = selected ? _state.playing : null;
-        Widget tile({TrackMetadata? metadata}) => ListTile(
-          selected: selected,
-          selectedTileColor: currentTrackTint(appearance, playing),
-          shape: appearance == null
+        Widget tile({LibraryTrack? details}) {
+          final metadata = details?.metadata;
+          final coverKey = metadata?.coverKey;
+          final cover = coverKey == null
               ? null
-              : RoundedRectangleBorder(borderRadius: BorderRadius.circular(11)),
-          textColor: appearance?.ink,
-          selectedColor: appearance?.accent,
-          iconColor: appearance?.muted,
-          contentPadding: appearance == null
-              ? null
-              : const EdgeInsets.symmetric(horizontal: 10),
-          leading: appearance == null
-              ? Icon(selected ? Icons.music_note : Icons.audiotrack)
-              : AuroraArtwork(
-                  appearance: appearance,
-                  size: 39,
-                  radius: 8,
-                  path: metadata?.coverKey == null
-                      ? null
-                      : widget.library!.repository.coverPath(
-                          metadata!.coverKey!,
-                        ),
-                ),
-          title: trackTitle(
-            Text(
-              track.name,
-              maxLines: appearance == null ? null : 1,
-              overflow: appearance == null ? null : TextOverflow.ellipsis,
-            ),
-            indicatorKey: ValueKey('queue-current-track-$index'),
-            playing: playing,
-            appearance: appearance,
-          ),
-          trailing: widget.library == null
-              ? null
-              : Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (appearance != null && metadata != null)
-                      Text(
-                        libraryTime(metadata.durationMs),
-                        style: TextStyle(color: appearance.muted, fontSize: 11),
-                      ),
-                    PopupMenuButton<String>(
-                      popUpAnimationStyle: reducedAnimationStyle(context),
-                      tooltip: 'Действия трека очереди',
-                      style: appearance?.iconButton(context),
-                      onSelected: (action) {
-                        final path = track.uri.toFilePath();
-                        if (action == 'edit') {
-                          editTrackMetadataPath(context, path, widget.library!);
-                          return;
-                        }
-                        addToPlaylist(
-                          context,
-                          PlaylistRepository(
-                            widget.library!.repository.directory,
-                          ),
-                          [
-                            PlaylistTrackRef(
-                              path: path,
-                              title: track.name,
-                              artists: track.artists,
-                              durationMs: selected
-                                  ? _state.duration.inMilliseconds
-                                  : 0,
-                            ),
-                          ],
-                        );
-                      },
-                      itemBuilder: (_) => [
-                        PopupMenuItem(
-                          value: 'edit',
-                          enabled:
-                              !widget.library!.mutating &&
-                              ['.mp3', '.flac'].contains(
-                                p
-                                    .extension(track.uri.toFilePath())
-                                    .toLowerCase(),
-                              ),
-                          child: const Text('Редактировать метаданные'),
-                        ),
-                        const PopupMenuItem(
-                          value: 'playlist',
-                          child: Text('Добавить в плейлист'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-          subtitle: Text(
-            track.artists.isEmpty
-                ? 'Неизвестный исполнитель'
-                : track.artists.join(' / '),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: appearance == null
+              : widget.library!.repository.coverPath(coverKey);
+          return ListTile(
+            selected: selected,
+            selectedTileColor: currentTrackTint(appearance, playing),
+            shape: appearance == null
                 ? null
-                : TextStyle(color: appearance.muted, fontSize: 12),
-          ),
-          onTap: _busy ? null : () => _run(() => widget.engine.jump(index)),
-        );
-        if (appearance == null) return tile();
+                : RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(11),
+                  ),
+            textColor: appearance?.ink,
+            selectedColor: appearance?.accent,
+            iconColor: appearance?.muted,
+            contentPadding: appearance == null
+                ? null
+                : const EdgeInsets.symmetric(horizontal: 10),
+            leading: appearance == null
+                ? details?.isUserAlbum == true && cover != null
+                      ? SizedBox.square(
+                          dimension: 39,
+                          child: AlbumArtwork(
+                            path: cover,
+                            displaySize: 39,
+                            radius: 8,
+                          ),
+                        )
+                      : Icon(selected ? Icons.music_note : Icons.audiotrack)
+                : AuroraArtwork(
+                    appearance: appearance,
+                    size: 39,
+                    radius: 8,
+                    path: metadata?.coverKey == null
+                        ? null
+                        : widget.library!.repository.coverPath(
+                            metadata!.coverKey!,
+                          ),
+                  ),
+            title: trackTitle(
+              Text(
+                track.name,
+                maxLines: appearance == null ? null : 1,
+                overflow: appearance == null ? null : TextOverflow.ellipsis,
+              ),
+              indicatorKey: ValueKey('queue-current-track-$index'),
+              playing: playing,
+              appearance: appearance,
+            ),
+            trailing: widget.library == null
+                ? null
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (appearance != null && metadata != null)
+                        Text(
+                          libraryTime(metadata.durationMs),
+                          style: TextStyle(
+                            color: appearance.muted,
+                            fontSize: 11,
+                          ),
+                        ),
+                      PopupMenuButton<String>(
+                        popUpAnimationStyle: reducedAnimationStyle(context),
+                        tooltip: 'Действия трека очереди',
+                        style: appearance?.iconButton(context),
+                        onSelected: (action) {
+                          final path = track.uri.toFilePath();
+                          if (action == 'edit') {
+                            editTrackMetadataPath(
+                              context,
+                              path,
+                              widget.library!,
+                            );
+                            return;
+                          }
+                          addToPlaylist(
+                            context,
+                            PlaylistRepository(
+                              widget.library!.repository.directory,
+                            ),
+                            [
+                              PlaylistTrackRef(
+                                path: path,
+                                title: track.name,
+                                artists: track.artists,
+                                durationMs: selected
+                                    ? _state.duration.inMilliseconds
+                                    : 0,
+                              ),
+                            ],
+                          );
+                        },
+                        itemBuilder: (_) => [
+                          PopupMenuItem(
+                            value: 'edit',
+                            enabled:
+                                !widget.library!.mutating &&
+                                ['.mp3', '.flac'].contains(
+                                  p
+                                      .extension(track.uri.toFilePath())
+                                      .toLowerCase(),
+                                ),
+                            child: const Text('Редактировать метаданные'),
+                          ),
+                          const PopupMenuItem(
+                            value: 'playlist',
+                            child: Text('Добавить в плейлист'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+            subtitle: Text(
+              track.artists.isEmpty
+                  ? 'Неизвестный исполнитель'
+                  : track.artists.join(' / '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: appearance == null
+                  ? null
+                  : TextStyle(color: appearance.muted, fontSize: 12),
+            ),
+            onTap: _busy ? null : () => _run(() => widget.engine.jump(index)),
+          );
+        }
+
+        if (appearance == null && widget.library?.status.hasUserAlbums != true)
+          return tile();
         final path = track.uri.toFilePath();
-        final found = _queueMetadata.putIfAbsent(
-          path,
-          () => widget.library!.repository.trackByPath(path),
-        );
+        final found =
+            _queueMetadata.remove(path) ??
+            widget.library!.repository.trackByPath(path);
+        _queueMetadata[path] = found;
         if (_queueMetadata.length > 48)
           _queueMetadata.remove(_queueMetadata.keys.first);
         final child = FutureBuilder<LibraryTrack?>(
           key: ValueKey(path),
           future: found,
-          builder: (context, snapshot) =>
-              tile(metadata: snapshot.data?.metadata),
+          builder: (context, snapshot) => tile(details: snapshot.data),
         );
-        return Padding(padding: const EdgeInsets.only(bottom: 4), child: child);
+        return appearance == null
+            ? child
+            : Padding(padding: const EdgeInsets.only(bottom: 4), child: child);
       },
     );
   }

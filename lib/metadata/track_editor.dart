@@ -167,7 +167,13 @@ Future<void> _checkRevision(EditSnapshot snapshot) async {
   }
 }
 
-Future<(Uint8List, String)> _readCover(String path) async {
+class ValidatedMetadataCover {
+  const ValidatedMetadataCover._(this.bytes, this.mimeType);
+  final Uint8List bytes;
+  final String mimeType;
+}
+
+Future<ValidatedMetadataCover> readMetadataCover(String path) async {
   if (await File(path).length() > 16 * 1024 * 1024)
     throw const FormatException('Обложка больше 16 МиБ');
   final bytes = await File(path).readAsBytes();
@@ -182,7 +188,10 @@ Future<(Uint8List, String)> _readCover(String path) async {
       info.height > 8192 ||
       decoder.decodeFrame(0) == null)
     throw const FormatException('Повреждённая или слишком большая обложка');
-  return (bytes, decoder is image.PngDecoder ? 'image/png' : 'image/jpeg');
+  return ValidatedMetadataCover._(
+    bytes,
+    decoder is image.PngDecoder ? 'image/png' : 'image/jpeg',
+  );
 }
 
 void validatePatch(MetadataPatch patch) {
@@ -200,13 +209,14 @@ void validatePatch(MetadataPatch patch) {
     }
   }
   for (final entry in patch.fields.entries) {
-    if (!editableFields.contains(entry.key))
+    if (!editableFields.contains(entry.key) && entry.key != 'DISCNUMBER')
       throw ArgumentError('Неподдерживаемое поле ${entry.key}');
     if (entry.value.length > 8192 || entry.value.contains('\u0000'))
       throw const FormatException(
         'Слишком длинное значение или недопустимый символ',
       );
-    if (['DATE', 'TRACKNUMBER'].contains(entry.key) && entry.value.isNotEmpty) {
+    if (['DATE', 'TRACKNUMBER', 'DISCNUMBER'].contains(entry.key) &&
+        entry.value.isNotEmpty) {
       final number = int.tryParse(entry.value);
       if (number == null || number < 1 || number > 9999)
         throw const FormatException(
@@ -225,6 +235,7 @@ Future<EditResult> saveTrackMetadata(
   void Function(File staged)? beforeWrite,
   void Function(File staged)? beforeVerify,
   Future<void> Function()? beforeCommit,
+  ValidatedMetadataCover? preparedCover,
 }) async {
   _extension(snapshot.path);
   requireEditable(snapshot.path);
@@ -237,6 +248,7 @@ Future<EditResult> saveTrackMetadata(
       beforeWrite: beforeWrite,
       beforeVerify: beforeVerify,
       beforeCommit: beforeCommit,
+      preparedCover: preparedCover,
     );
   } finally {
     unlockMetadataFile(lock);
@@ -250,13 +262,16 @@ Future<EditResult> _saveLocked(
   void Function(File staged)? beforeWrite,
   void Function(File staged)? beforeVerify,
   Future<void> Function()? beforeCommit,
+  ValidatedMetadataCover? preparedCover,
 }) async {
   validatePatch(patch);
   final extension = _extension(snapshot.path);
   await _checkRevision(snapshot);
-  final cover = patch.coverPath == null
-      ? null
-      : await _readCover(patch.coverPath!);
+  final cover =
+      preparedCover ??
+      (patch.coverPath == null
+          ? null
+          : await readMetadataCover(patch.coverPath!));
   final original = File(snapshot.path);
   final info = identity(snapshot.path);
   final mode = original.statSync().mode;
@@ -305,7 +320,7 @@ Future<EditResult> _saveLocked(
         if (entry.key == 'DATE') expected.remove('YEAR');
         if (value.isEmpty)
           expected.remove(entry.key);
-        else if (entry.key == 'TRACKNUMBER' &&
+        else if (['TRACKNUMBER', 'DISCNUMBER'].contains(entry.key) &&
             (expected[entry.key]?.firstOrNull?.contains('/') ?? false)) {
           expected[entry.key] = [
             '$value/${expected[entry.key]!.first.split('/').skip(1).join('/')}',
@@ -338,7 +353,10 @@ Future<EditResult> _saveLocked(
           'Формат файла не поддерживает изменение выбранного поля',
         );
       if (cover != null) {
-        final replacement = Picture(bytes: cover.$1, mimeType: cover.$2);
+        final replacement = Picture(
+          bytes: cover.bytes,
+          mimeType: cover.mimeType,
+        );
         final front = pictures.indexWhere(
           (picture) => picture.pictureType == 'Front Cover',
         );

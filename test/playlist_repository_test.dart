@@ -10,6 +10,7 @@ import 'package:musani/playlists/playlist_repository.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import 'support/audio_fixtures.dart';
+import 'support/catalog_fixture.dart';
 
 void main() {
   late Directory dir;
@@ -313,6 +314,7 @@ void main() {
 
   test('v2 upgrade adds playlist storage without changing the catalog; newer schemas are refused', () async {
     var db = sqlite3.open(library.databasePath);
+    dropV6AlbumStorage(db);
     db.execute('DROP TABLE playlist_artwork');
     db.execute('DROP TABLE playlist_entries');
     db.execute('DROP TABLE playlists');
@@ -325,7 +327,7 @@ void main() {
     expect(await PlaylistRepository(library.directory).list(), isEmpty);
     db = sqlite3.open(library.databasePath);
     try {
-      expect(db.select('PRAGMA user_version').single.values.single, 5);
+      expect(db.select('PRAGMA user_version').single.values.single, 6);
       expect(
         db
             .select('SELECT * FROM tracks ORDER BY id')
@@ -358,6 +360,7 @@ void main() {
       final before = await repo.detail(playlist.id);
       final audioHash = await hash(tracks.first.path);
       final db = sqlite3.open(library.databasePath);
+      dropV6AlbumStorage(db);
       db.execute('DROP TABLE playlist_artwork');
       db.execute('ALTER TABLE playlists DROP COLUMN is_album');
       db.execute('PRAGMA user_version=3');
@@ -405,6 +408,7 @@ void main() {
     final audioHashes = [for (final track in tracks) await hash(track.path)];
     final db = sqlite3.open(library.databasePath);
     try {
+      dropV6AlbumStorage(db);
       db.execute('ALTER TABLE playlists DROP COLUMN is_album');
       db.execute('PRAGMA user_version=4');
     } finally {
@@ -458,7 +462,7 @@ void main() {
     expect([for (final track in tracks) await hash(track.path)], audioHashes);
     final upgraded = sqlite3.open(library.databasePath);
     try {
-      expect(upgraded.select('PRAGMA user_version').single.values.single, 5);
+      expect(upgraded.select('PRAGMA user_version').single.values.single, 6);
       expect(upgraded.select('PRAGMA foreign_key_check'), isEmpty);
     } finally {
       upgraded.dispose();

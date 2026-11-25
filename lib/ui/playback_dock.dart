@@ -162,7 +162,7 @@ class PlaybackDock extends StatelessWidget {
           builder: (context, constraints) => Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              _progress(),
+              RepaintBoundary(child: _progress()),
               if (constraints.maxWidth < 640) ...[
                 _details(context),
                 Row(

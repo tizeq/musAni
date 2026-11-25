@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:path/path.dart' as p;
 
 import '../library/library_database.dart';
+import '../library/library_repository.dart';
 import 'models.dart';
 
 typedef _ArtworkRead = ({
@@ -19,20 +20,22 @@ class PlaylistRepository {
   final String directory;
   static final _artwork = Expando<Map<String, _ArtworkRead>>();
 
-  Future<T> _work<T>(Future<T> Function(LibraryDatabase db) operation) {
+  Future<T> _work<T>(Future<T> Function(LibraryDatabase db) operation) async {
     final root = directory;
-    return Isolate.run(() async {
+    final (result, changed) = await Isolate.run(() async {
       Directory(root).createSync(recursive: true);
       final db = LibraryDatabase(
         p.join(root, 'library.sqlite'),
         p.join(root, 'covers'),
       );
       try {
-        return await operation(db);
+        return (await operation(db), db.albumChanged);
       } finally {
         db.close();
       }
     });
+    if (changed) LibraryRepository.publishAlbumChange(root);
+    return result;
   }
 
   Future<List<UserPlaylist>> list() => _work((db) async => db.playlists());
@@ -49,6 +52,23 @@ class PlaylistRepository {
     (db) async =>
         db.updatePlaylistProperties(id, revision, name, isAlbum: isAlbum),
   );
+  Future<void> updateAlbum(
+    String id,
+    int revision,
+    String name,
+    UserAlbumMetadata metadata,
+  ) => _work((db) async => db.updateUserAlbum(id, revision, name, metadata));
+  Future<void> setAlbumDisc(
+    String id,
+    int revision,
+    String entryId,
+    int? disc,
+  ) => _work((db) async => db.setUserAlbumDisc(id, revision, entryId, disc));
+  Future<AlbumWriteReport> writeAlbumTags(String id, int revision) {
+    final backups = p.join(directory, '.musani-edit-backups');
+    return _work((db) => db.writeUserAlbumTags(id, revision, backups));
+  }
+
   Future<void> delete(String id, int revision) =>
       _work((db) async => db.deletePlaylist(id, revision));
   Future<void> add(String id, int revision, List<PlaylistTrackRef> tracks) =>

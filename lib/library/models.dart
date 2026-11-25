@@ -50,6 +50,7 @@ class LibraryTrack {
 
   /// Null when the source has no album tag; such tracks have no album group.
   final String? albumId;
+  bool get isUserAlbum => albumId?.startsWith('playlist:') == true;
   final TrackMetadata metadata;
   final int size;
   final int modifiedUs;
@@ -72,6 +73,8 @@ class LibraryAlbum {
     this.coverKey,
   });
   final String id;
+  String? get userPlaylistId =>
+      id.startsWith('playlist:') ? id.substring('playlist:'.length) : null;
   final String title;
   final String artist;
   final int year;
@@ -109,11 +112,13 @@ class LibraryStatus {
     this.trackCount = 0,
     this.albumCount = 0,
     this.artistCount = 0,
+    this.hasUserAlbums = false,
   });
   final List<LibraryRoot> roots;
   final int trackCount;
   final int albumCount;
   final int artistCount;
+  final bool hasUserAlbums;
 }
 
 enum LibraryView { albums, artists, tracks }

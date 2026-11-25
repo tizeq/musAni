@@ -12,6 +12,7 @@ import 'metadata_editor_dialog.dart';
 import 'motion.dart';
 import 'aurora_scene.dart';
 import 'playlist_cover.dart';
+import 'album_artwork.dart';
 import 'current_track_details.dart';
 
 typedef PlaylistPlayback = Future<void> Function(
@@ -34,6 +35,8 @@ class PlaylistPage extends StatefulWidget {
     this.library,
     this.linkPicker = pickPlaylistLink,
     this.coverPicker = pickPlaylistCover,
+    this.onBack,
+    this.onAlbumChanged,
   });
   final String id;
   final PlaylistRepository repository;
@@ -41,6 +44,8 @@ class PlaylistPage extends StatefulWidget {
   final LibraryController? library;
   final PlaylistLinkPicker linkPicker;
   final PlaylistCoverPicker coverPicker;
+  final VoidCallback? onBack;
+  final ValueChanged<UserPlaylist>? onAlbumChanged;
   @override
   State<PlaylistPage> createState() => _PlaylistPageState();
 }
@@ -61,7 +66,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
   }
 
   void _catalogChanged() {
-    if (_catalogRevision != widget.library?.catalogRevision) _load();
+    if (!_busy && _catalogRevision != widget.library?.catalogRevision) _load();
   }
 
   @override
@@ -80,6 +85,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
     try {
       final detail = await widget.repository.detail(widget.id);
       if (mounted && request == _request) {
+        final previous = _detail?.playlist;
         final paths = <String>{};
         setState(() {
           _detail = detail;
@@ -88,6 +94,11 @@ class _PlaylistPageState extends State<PlaylistPage> {
               if (paths.add(entry.track.path)) entry.id,
           };
         });
+        if (previous != null &&
+            (previous.name != detail.playlist.name ||
+                previous.isAlbum != detail.playlist.isAlbum)) {
+          widget.onAlbumChanged?.call(detail.playlist);
+        }
       }
     } catch (error) {
       if (mounted && request == _request) setState(() => _error = '$error');
@@ -133,12 +144,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
     final properties = await playlistPropertiesDialog(context, playlist);
     if (properties != null && mounted)
       await _run(
-        (_) => widget.repository.updateProperties(
-          playlist.id,
-          playlist.revision,
-          name: properties.name,
-          isAlbum: properties.isAlbum,
-        ),
+        (_) => savePlaylistProperties(widget.repository, playlist, properties),
       );
   }
 
@@ -173,7 +179,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
     setState(() => _busy = true);
     try {
       await widget.repository.delete(playlist.id, playlist.revision);
-      if (mounted) Navigator.pop(context);
+      if (mounted) (widget.onBack ?? () => Navigator.pop(context))();
     } catch (error) {
       if (mounted) {
         await _load();
@@ -189,7 +195,19 @@ class _PlaylistPageState extends State<PlaylistPage> {
     bool enabled,
     AuroraAppearance? aurora,
   ) {
-    final album = aurora != null && detail.playlist.isAlbum;
+    final album = detail.playlist.isAlbum;
+    final metadata = detail.playlist.albumMetadata;
+    final credits = [
+      if (metadata.artist.isNotEmpty) metadata.artist,
+      if (metadata.year != 0) '${metadata.year}',
+      if (metadata.genre.isNotEmpty) metadata.genre,
+    ].join(' · ');
+    final summary = Text(
+      credits,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+      style: aurora == null ? null : TextStyle(color: aurora.muted),
+    );
     final duration = Text(
       '${aurora == null ? '${detail.entries.length} треков' : libraryTrackCount(detail.entries.length)} · ${libraryTime(detail.playlist.durationMs)}',
       key: const Key('playlist-duration'),
@@ -199,10 +217,10 @@ class _PlaylistPageState extends State<PlaylistPage> {
       style: aurora?.accentButton(),
       onPressed:
           enabled &&
-              detail.entries.isNotEmpty &&
+              detail.entries.any((entry) => entry.albumConflict == null) &&
               detail.unavailableCount == 0 &&
               widget.onPlay != null
-          ? () => _play(0)
+          ? _play
           : null,
       icon: const Icon(Icons.play_arrow),
       label: Text(
@@ -218,7 +236,26 @@ class _PlaylistPageState extends State<PlaylistPage> {
           spacing: 20,
           runSpacing: 8,
           crossAxisAlignment: WrapCrossAlignment.center,
-          children: [duration, play],
+          children: [
+            if (album)
+              SizedBox.square(
+                dimension: 72,
+                child: AlbumArtwork(
+                  displaySize: 72,
+                  path: switch (detail.playlist.albumCoverKey ??
+                      detail.entries
+                          .map((entry) => entry.track.coverKey)
+                          .nonNulls
+                          .firstOrNull) {
+                    final key? => widget.repository.trackCoverPath(key),
+                    null => null,
+                  },
+                ),
+              ),
+            if (album && credits.isNotEmpty) summary,
+            duration,
+            play,
+          ],
         ),
       );
     return Padding(
@@ -293,6 +330,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                       ),
                     ),
                     const SizedBox(height: 3),
+                    if (album && credits.isNotEmpty) summary,
                     duration,
                     const SizedBox(height: 6),
                     play,
@@ -333,13 +371,22 @@ class _PlaylistPageState extends State<PlaylistPage> {
     );
   }
 
-  Future<void> _play(int index) async {
+  Future<void> _play([int? index]) async {
     if (_busy ||
         _loading ||
         _detail!.unavailableCount > 0 ||
         widget.onPlay == null)
       return;
-    final tracks = _detail!.entries
+    final detail = _detail!;
+    final selected = index == null ? null : detail.entries[index].id;
+    final entries = detail.entries
+        .where((entry) => entry.albumConflict == null)
+        .toList();
+    final start = selected == null
+        ? 0
+        : entries.indexWhere((entry) => entry.id == selected);
+    if (entries.isEmpty || start < 0) return;
+    final tracks = entries
         .map(
           (entry) =>
               entry.track.toPlayable(playlistEntry: (widget.id, entry.id)),
@@ -347,12 +394,113 @@ class _PlaylistPageState extends State<PlaylistPage> {
         .toList();
     setState(() => _busy = true);
     try {
-      await widget.onPlay!(tracks, index);
+      await widget.onPlay!(tracks, start);
     } catch (error) {
       if (mounted) setState(() => _error = '$error');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  Future<void> _editDisc(PlaylistEntry entry) async {
+    final result = await albumDiscDialog(context, entry.albumDisc);
+    if (result != null && mounted) {
+      await _run(
+        (playlist) => widget.repository.setAlbumDisc(
+          playlist.id,
+          playlist.revision,
+          entry.id,
+          result.disc,
+        ),
+      );
+    }
+  }
+
+  Future<void> _writeAlbum() async {
+    final detail = _detail!;
+    final confirmed = await showAppDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Записать теги альбома в файлы?'),
+        content: Text(
+          '«${detail.playlist.name}». Запись изменит теги файлов MP3 и FLAC '
+          'и создаст резервную копию каждого изменённого файла. '
+          'Текущие обложки сохранятся, если для альбома не задана общая обложка.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Записать теги'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final library = widget.library;
+    if (library?.mutating == true) return;
+    AlbumWriteReport? report;
+    await _run((_) async {
+      Future<AlbumWriteReport> save() => widget.repository.writeAlbumTags(
+        detail.playlist.id,
+        detail.playlist.revision,
+      );
+      report = library == null
+          ? await save()
+          : await library.writeMetadata(save);
+    });
+    if (!mounted || report == null) return;
+    final result = report!;
+    final saved = result.items
+        .where((item) => item.status == AlbumWriteStatus.saved)
+        .length;
+    await showAppDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Результат записи тегов'),
+        content: SizedBox(
+          width: 520,
+          height: (MediaQuery.sizeOf(context).height * .45).clamp(60.0, 340.0),
+          child: ListView.builder(
+            itemCount: result.items.length + 1,
+            itemBuilder: (_, index) {
+              if (index == 0)
+                return Text(
+                  [
+                    'Сохранено: $saved из ${result.items.length}',
+                    if (result.catalogWarning case final warning?) warning,
+                  ].join('\n'),
+                );
+              final item = result.items[index - 1];
+              return ListTile(
+                title: Text(p.basename(item.path)),
+                subtitle: Text(
+                  [
+                    if (item.message case final message?) message,
+                    if (item.backupPath case final backup?)
+                      'Резервная копия: $backup',
+                  ].join('\n'),
+                ),
+                leading: Icon(
+                  item.status == AlbumWriteStatus.saved
+                      ? Icons.check_circle_outline
+                      : Icons.warning_amber_rounded,
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
   }
 
   List<PopupMenuEntry<String>> _entryMenu(int index) => [
@@ -367,6 +515,9 @@ class _PlaylistPageState extends State<PlaylistPage> {
             ),
         child: const Text('Редактировать метаданные'),
       ),
+    if (_detail!.playlist.isAlbum &&
+        _detail!.entries[index].albumConflict == null)
+      const PopupMenuItem(value: 'disc', child: Text('Номер диска')),
     PopupMenuItem(
       value: 'up',
       enabled: index > 0,
@@ -386,6 +537,8 @@ class _PlaylistPageState extends State<PlaylistPage> {
     switch (action) {
       case 'edit':
         editTrackMetadataPath(context, entry.track.path, widget.library!);
+      case 'disc':
+        _editDisc(entry);
       case 'up':
         _reorder(index, index - 1);
       case 'down':
@@ -433,6 +586,9 @@ class _PlaylistPageState extends State<PlaylistPage> {
       backgroundColor: aurora == null ? null : Colors.transparent,
       appBar: AppBar(
         toolbarHeight: aurora == null ? null : 46,
+        leading: widget.onBack == null
+            ? null
+            : BackButton(onPressed: widget.onBack),
         title: aurora == null || detail == null
             ? Text(detail?.playlist.name ?? 'Плейлист')
             : null,
@@ -454,20 +610,34 @@ class _PlaylistPageState extends State<PlaylistPage> {
                 'rename' => _rename(),
                 'properties' => _properties(),
                 'reset-cover' => _resetCover(),
+                'choose-cover' => _chooseCover(),
+                'write-album' => _writeAlbum(),
                 _ => _delete(),
               },
               itemBuilder: (_) => [
-                if (aurora == null)
+                if (aurora == null && !detail.playlist.isAlbum)
                   const PopupMenuItem(
                     value: 'rename',
                     child: Text('Переименовать'),
-                  )
-                else
-                  const PopupMenuItem(
-                    value: 'properties',
-                    child: Text('Свойства'),
                   ),
-                if (aurora != null)
+                const PopupMenuItem(
+                  value: 'properties',
+                  child: Text('Свойства'),
+                ),
+                if (detail.playlist.isAlbum && aurora == null)
+                  const PopupMenuItem(
+                    value: 'choose-cover',
+                    child: Text('Выбрать обложку'),
+                  ),
+                if (detail.playlist.isAlbum)
+                  PopupMenuItem(
+                    value: 'write-album',
+                    enabled:
+                        detail.entries.isNotEmpty &&
+                        widget.library?.mutating != true,
+                    child: const Text('Записать теги в MP3 и FLAC'),
+                  ),
+                if (aurora != null || detail.playlist.isAlbum)
                   const PopupMenuItem(
                     value: 'reset-cover',
                     child: Text('Сбросить обложку'),
@@ -647,6 +817,10 @@ class _PlaylistPageState extends State<PlaylistPage> {
                                           fontSize: 12,
                                         ),
                                 ),
+                                if (entry.albumConflict != null)
+                                  const Text(
+                                    'Трек закреплён за другой записью',
+                                  ),
                                 if (!entry.available)
                                   Text(
                                     entry.error!,
@@ -672,6 +846,7 @@ class _PlaylistPageState extends State<PlaylistPage> {
                             onTap:
                                 enabled &&
                                     unavailable == 0 &&
+                                    entry.albumConflict == null &&
                                     widget.onPlay != null
                                 ? () => _play(index)
                                 : null,

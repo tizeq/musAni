@@ -5,14 +5,32 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:musani/files/local_tracks.dart';
 import 'package:musani/library/library_controller.dart';
+import 'package:musani/library/models.dart';
 import 'package:musani/playlists/models.dart';
 import 'package:musani/ui/library_page.dart';
+import 'package:musani/ui/library_workspace.dart';
 import 'package:musani/ui/playlist_actions.dart';
 import 'package:musani/ui/playlist_page.dart';
 import 'package:musani/ui/metadata_editor_dialog.dart';
 
 import 'support/library_fakes.dart';
 import 'support/playlist_fakes.dart';
+
+class _AlbumWriteRepository extends MemoryPlaylistRepository {
+  int writes = 0;
+
+  @override
+  Future<AlbumWriteReport> writeAlbumTags(String id, int revision) async {
+    writes++;
+    return const AlbumWriteReport([
+      AlbumWriteItem(
+        '/tmp/a.mp3',
+        AlbumWriteStatus.saved,
+        backupPath: '/backups/a.mp3',
+      ),
+    ]);
+  }
+}
 
 void main() {
   late MemoryPlaylistRepository repo;
@@ -79,6 +97,107 @@ void main() {
     );
     await tester.pumpAndSettle();
   }
+
+  testWidgets('catalog album opens its editable playlist-backed tab', (
+    tester,
+  ) async {
+    final base = await populated();
+    final detail = await repo.detail(base.id);
+    repo.items[base.id] = PlaylistDetail(
+      UserPlaylist(
+        id: base.id,
+        name: 'Концерт',
+        revision: base.revision,
+        updatedMs: base.updatedMs,
+        isAlbum: true,
+        albumMetadata: const UserAlbumMetadata(artist: 'Ансамбль', year: 1998),
+      ),
+      [
+        for (final entry in detail.entries)
+          PlaylistEntry(
+            id: entry.id,
+            position: entry.position,
+            track: entry.track,
+            fileState: entry.fileState,
+            albumDisc: 7,
+            albumTrackNumber: entry.position + 1,
+          ),
+      ],
+    );
+    final key = GlobalKey<LibraryWorkspaceState>();
+    final played = <LocalTrack>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LibraryWorkspace(
+          key: key,
+          library: library,
+          playlists: repo,
+          onPlay: (_, _) async {},
+          onPlayQuery: (_, {startPath}) async {},
+          onPlayPlaylist: (tracks, _) async => played.addAll(tracks),
+          child: const SizedBox(),
+        ),
+      ),
+    );
+    key.currentState!.openAlbum(
+      LibraryAlbum(
+        id: 'playlist:${base.id}',
+        title: 'Концерт',
+        artist: 'Ансамбль',
+        year: 1998,
+        trackCount: 2,
+        durationMs: 150000,
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byType(PlaylistPage), findsOneWidget);
+    expect(find.text('Ансамбль · 1998'), findsOneWidget);
+    expect(find.textContaining('Диск 7'), findsNothing);
+    expect(find.textContaining('№ '), findsNothing);
+    await tester.tap(find.text('Воспроизвести альбом'));
+    await tester.pumpAndSettle();
+    expect(played.map((t) => t.name), ['Song A', 'Song B']);
+    expect(played.every((t) => t.playlistEntry?.$1 == base.id), isTrue);
+  });
+
+  testWidgets('physical album export requires explicit confirmation', (
+    tester,
+  ) async {
+    final albums = _AlbumWriteRepository();
+    repo = albums;
+    final playlist = await populated();
+    final detail = await repo.detail(playlist.id);
+    repo.items[playlist.id] = PlaylistDetail(
+      UserPlaylist(
+        id: playlist.id,
+        name: 'Альбом',
+        revision: playlist.revision,
+        updatedMs: playlist.updatedMs,
+        isAlbum: true,
+      ),
+      detail.entries,
+    );
+    await page(tester, playlist.id);
+    Future<void> openExport() async {
+      await tester.tap(find.byTooltip('Действия плейлиста'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Записать теги в MP3 и FLAC'));
+      await tester.pumpAndSettle();
+    }
+
+    await openExport();
+    expect(albums.writes, 0);
+    await tester.tap(find.text('Отмена'));
+    await tester.pumpAndSettle();
+    expect(albums.writes, 0);
+
+    await openExport();
+    await tester.tap(find.text('Записать теги'));
+    await tester.pumpAndSettle();
+    expect(albums.writes, 1);
+    expect(find.text('Результат записи тегов'), findsOneWidget);
+    expect(find.textContaining('/backups/a.mp3'), findsOneWidget);
+  });
 
   testWidgets(
     'playlist context menu opens the existing metadata editor for its path',

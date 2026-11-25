@@ -426,12 +426,16 @@ void main() {
           artists: ['Tyler, The Creator', 'Guest'],
           album: 'Север',
           albumArtist: 'Группа',
+          trackNumber: 23,
+          discNumber: 7,
         ),
       );
       await controller.metadataChanged(old.path);
       await tester.pumpAndSettle();
       expect(find.text('Edited elsewhere'), findsOneWidget);
-      expect(find.text('Tyler, The Creator / Guest · Север'), findsOneWidget);
+      expect(find.text('Tyler, The Creator / Guest'), findsOneWidget);
+      expect(find.text('Tyler, The Creator / Guest · Север'), findsNothing);
+      expect(find.text('7.23'), findsNothing);
       await tester.pumpWidget(const SizedBox());
       controller.dispose();
     },

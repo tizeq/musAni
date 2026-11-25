@@ -162,8 +162,6 @@ class _AlbumPageState extends State<AlbumPage> {
             .where((genre) => genre.isNotEmpty)
             .toSet()
             .join(' · ');
-        final multipleDiscs =
-            tracks.map((track) => track.metadata.discNumber).toSet().length > 1;
         return CustomScrollView(
           slivers: [
             SliverToBoxAdapter(
@@ -262,9 +260,11 @@ class _AlbumPageState extends State<AlbumPage> {
                   final track = tracks[index];
                   return LibraryTrackTile(
                     track: track,
-                    number: multipleDiscs
-                        ? '${track.metadata.discNumber}.${track.metadata.trackNumber}'
-                        : '${track.metadata.trackNumber > 0 ? track.metadata.trackNumber : index + 1}',
+                    coverPath: track.metadata.coverKey == null
+                        ? null
+                        : widget.controller.repository.coverPath(
+                            track.metadata.coverKey!,
+                          ),
                     onTap: () => widget.onPlay(tracks, index),
                     onEdit: () => _edit(track),
                     onAddToPlaylist: () => addToPlaylist(

@@ -18,13 +18,15 @@ Future<void> main() async {
       Player(configuration: const PlayerConfiguration(title: 'musAni')),
       repeatModeStore: PreferencesRepeatModeStore(),
     );
-    await engine.restoreRepeatMode();
-    final directory = await getApplicationSupportDirectory();
+    final settings = SettingsController(PreferencesSettingsStore());
+    final (directory, _, _) = await (
+      getApplicationSupportDirectory(),
+      settings.restore(),
+      engine.restoreRepeatMode(),
+    ).wait;
     final library = LibraryController(
       LibraryRepository(p.join(directory.path, 'library')),
     );
-    final settings = SettingsController(PreferencesSettingsStore());
-    await settings.restore();
     runApp(MusaniApp(engine: engine, library: library, settings: settings));
   } catch (error) {
     runApp(

@@ -34,19 +34,40 @@ class _PlaylistsViewState extends State<PlaylistsView> {
   String? _error;
   bool _busy = false;
   int _request = 0;
+  int? _catalogRevision;
   @override
   void initState() {
     super.initState();
+    widget.library?.addListener(_catalogChanged);
     _load();
   }
 
   @override
   void didUpdateWidget(PlaylistsView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.library != widget.library) {
+      oldWidget.library?.removeListener(_catalogChanged);
+      widget.library?.addListener(_catalogChanged);
+      _catalogChanged();
+    }
     if (widget.active && !oldWidget.active && !_busy) _load();
   }
 
+  void _catalogChanged() {
+    if (!_busy &&
+        widget.active &&
+        _catalogRevision != widget.library?.catalogRevision)
+      _load();
+  }
+
+  @override
+  void dispose() {
+    widget.library?.removeListener(_catalogChanged);
+    super.dispose();
+  }
+
   Future<void> _load() async {
+    _catalogRevision = widget.library?.catalogRevision;
     final request = ++_request;
     try {
       final items = await widget.repository.list();
@@ -89,12 +110,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
       final properties = await playlistPropertiesDialog(context, playlist);
       if (properties != null && mounted)
         await _change(
-          () => widget.repository.updateProperties(
-            playlist.id,
-            playlist.revision,
-            name: properties.name,
-            isAlbum: properties.isAlbum,
-          ),
+          () => savePlaylistProperties(widget.repository, playlist, properties),
         );
     } else if (action == 'rename') {
       final name = await playlistNameDialog(context, initial: playlist.name);
@@ -162,7 +178,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                   itemCount: _items!.length,
                   itemBuilder: (context, index) {
                     final playlist = _items![index];
-                    final album = aurora != null && playlist.isAlbum;
+                    final album = playlist.isAlbum;
                     final description = Text(
                       '${album ? 'Альбом · ' : ''}${aurora == null ? '${playlist.trackCount} треков' : libraryTrackCount(playlist.trackCount)} · ${libraryTime(playlist.durationMs)}',
                       style: aurora == null
@@ -172,7 +188,9 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                     return ListTile(
                       key: Key('playlist-${playlist.id}'),
                       leading: aurora == null
-                          ? const Icon(Icons.queue_music)
+                          ? Icon(
+                              album ? Icons.album_outlined : Icons.queue_music,
+                            )
                           : PlaylistCover(
                               repository: widget.repository,
                               playlist: playlist,
@@ -192,7 +210,7 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                                 Icon(
                                   Icons.album_outlined,
                                   size: 15,
-                                  color: aurora.accent,
+                                  color: aurora?.accent,
                                 ),
                                 const SizedBox(width: 5),
                                 Flexible(child: description),
@@ -227,12 +245,11 @@ class _PlaylistsViewState extends State<PlaylistsView> {
                             const PopupMenuItem(
                               value: 'rename',
                               child: Text('Переименовать'),
-                            )
-                          else
-                            const PopupMenuItem(
-                              value: 'properties',
-                              child: Text('Свойства'),
                             ),
+                          const PopupMenuItem(
+                            value: 'properties',
+                            child: Text('Свойства'),
+                          ),
                           const PopupMenuItem(
                             value: 'delete',
                             child: Text('Удалить плейлист'),

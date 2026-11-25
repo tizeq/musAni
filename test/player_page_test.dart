@@ -218,6 +218,78 @@ void main() {
     },
   );
 
+  for (final theme in MusaniTheme.values) {
+    testWidgets('player and track lists hide album metadata in ${theme.name}', (
+      tester,
+    ) async {
+      const track = LibraryTrack(
+        id: 1,
+        path: '/tmp/album-track.flac',
+        albumId: 'playlist:example',
+        metadata: TrackMetadata(
+          title: 'Композиция',
+          artists: ['Исполнитель трека'],
+          album: 'Концертный альбом',
+          albumArtist: 'Ансамбль',
+          trackNumber: 1,
+          discNumber: 2,
+        ),
+        size: 0,
+        modifiedUs: 0,
+        changedUs: 0,
+      );
+      final repo = FakeLibraryRepository([track]);
+      final engine = FakeEngine(queue: [track.playable]);
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: MusaniDesign.theme(theme, Brightness.dark),
+          home: PlayerPage(
+            engine: engine,
+            library: LibraryController(repo)
+              ..query = const LibraryQuery(view: LibraryView.tracks),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(repo.labelReads, greaterThan(0));
+      expect(
+        tester.widget<Text>(find.byKey(const Key('now-playing-title'))).data,
+        track.metadata.title,
+      );
+      expect(
+        tester.widget<Text>(find.byKey(const Key('now-playing-artists'))).data,
+        track.metadata.artists.single,
+      );
+      void expectNoAlbumMetadata() {
+        expect(find.textContaining(track.metadata.album), findsNothing);
+        expect(find.textContaining('Диск 2'), findsNothing);
+        expect(find.textContaining('№ 1'), findsNothing);
+      }
+
+      expect(find.byType(LibraryTrackTile), findsOneWidget);
+      expectNoAlbumMetadata();
+
+      await tester.tap(
+        find.byTooltip(
+          theme == MusaniTheme.atmosphere
+              ? 'Открыть очередь'
+              : 'Очередь воспроизведения',
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.byKey(const Key('queue-current-track-0')), findsOneWidget);
+      expectNoAlbumMetadata();
+
+      if (theme == MusaniTheme.atmosphere) {
+        await tester.tap(find.byKey(const Key('collection-mode-currentTrack')));
+        await tester.pumpAndSettle();
+        expect(find.byKey(const Key('panel-track-title')), findsOneWidget);
+        expectNoAlbumMetadata();
+      }
+    });
+  }
+
   testWidgets(
     'catalog edits refresh current labels without reopening audio or querying on position ticks',
     (tester) async {

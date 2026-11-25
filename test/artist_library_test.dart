@@ -8,6 +8,7 @@ import 'package:musani/library/models.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 import 'support/audio_fixtures.dart';
+import 'support/catalog_fixture.dart';
 
 void main() {
   late Directory dir;
@@ -181,6 +182,7 @@ void main() {
       "INSERT INTO track_artists(track_id,artist_key,name) VALUES (?,'tyler','Tyler'),(?,'the creator','The Creator')",
       [sharedId, sharedId],
     );
+    dropV6AlbumStorage(db);
     db.execute('DROP TABLE playlist_artwork');
     db.execute('DROP TABLE playlist_entries');
     db.execute('DROP TABLE playlists');
@@ -239,7 +241,7 @@ void main() {
     );
     db = sqlite3.open(repo.databasePath);
     try {
-      expect(db.select('PRAGMA user_version').single.values.single, 5);
+      expect(db.select('PRAGMA user_version').single.values.single, 6);
       expect(db.select('PRAGMA foreign_key_check'), isEmpty);
       expect(
         db

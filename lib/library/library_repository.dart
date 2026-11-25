@@ -16,7 +16,31 @@ class LibraryRepository {
   final String directory;
   final _queries = <String, LibraryResult>{};
   final _albums = <String, List<LibraryTrack>>{};
+  var _pendingPaths = <String, Completer<LibraryTrack?>>{};
+  static final _albumRevisions = <String, int>{};
+  static final _albumChanges = StreamController<String>.broadcast();
+  static int _nextAlbumRevision = 0;
+  static void publishAlbumChange(String directory) {
+    final key = p.normalize(p.absolute(directory));
+    _albumRevisions.remove(key);
+    _albumRevisions[key] = ++_nextAlbumRevision;
+    if (_albumRevisions.length > 64)
+      _albumRevisions.remove(_albumRevisions.keys.first);
+    _albumChanges.add(key);
+  }
+
+  late final String _catalogKey = p.normalize(p.absolute(directory));
+  Stream<String> get albumChanges =>
+      _albumChanges.stream.where((key) => key == _catalogKey);
+  int _albumRevision = 0;
   int _generation = 0;
+
+  void _syncAlbums() {
+    final revision = _albumRevisions[_catalogKey] ?? 0;
+    if (revision == _albumRevision) return;
+    _albumRevision = revision;
+    _invalidate();
+  }
 
   void _invalidate() {
     _generation++;
@@ -47,6 +71,7 @@ class LibraryRepository {
   }
 
   Future<LibraryResult> query(LibraryQuery query) async {
+    _syncAlbums();
     final key = jsonEncode([
       query.view.index,
       query.search,
@@ -72,6 +97,7 @@ class LibraryRepository {
         db.close();
       }
     });
+    _syncAlbums();
     if (generation == _generation) _remember(_queries, key, result);
     return result;
   }
@@ -89,6 +115,7 @@ class LibraryRepository {
   }
 
   Future<List<LibraryTrack>> albumTracks(String albumId) async {
+    _syncAlbums();
     final cached = _albums.remove(albumId);
     if (cached != null) {
       _albums[albumId] = cached;
@@ -122,11 +149,32 @@ class LibraryRepository {
   }
 
   Future<LibraryTrack?> trackByPath(String path) {
+    if (_pendingPaths.isEmpty) scheduleMicrotask(_flushTrackPaths);
+    return _pendingPaths.putIfAbsent(path, Completer<LibraryTrack?>.new).future;
+  }
+
+  // Rows built during the same frame share one worker and SQLite connection.
+  Future<void> _flushTrackPaths() async {
+    final pending = _pendingPaths;
+    _pendingPaths = {};
+    try {
+      final tracks = await _readTrackPaths(pending.keys.toList());
+      for (final entry in pending.entries) {
+        entry.value.complete(tracks[entry.key]);
+      }
+    } catch (error, stack) {
+      for (final entry in pending.entries) {
+        entry.value.completeError(error, stack);
+      }
+    }
+  }
+
+  Future<Map<String, LibraryTrack>> _readTrackPaths(List<String> paths) {
     final root = directory;
     return Isolate.run(() {
       final db = _open(root);
       try {
-        return db.trackByPath(path);
+        return db.tracksByPath(paths);
       } finally {
         db.close();
       }

@@ -7,6 +7,7 @@ import 'album_page.dart';
 import 'artist_page.dart';
 import 'aurora_scene.dart';
 import 'library_widgets.dart';
+import 'playlist_page.dart';
 
 enum _PageKind { album, artist }
 
@@ -33,12 +34,16 @@ class LibraryWorkspace extends StatefulWidget {
     required this.onPlayQuery,
     required this.child,
     this.frame,
+    this.onPlayPlaylist,
+    this.linkPicker = pickPlaylistLink,
     this.onReveal,
   });
 
   final LibraryController library;
   final PlaylistRepository playlists;
   final LibraryPlayback onPlay;
+  final PlaylistPlayback? onPlayPlaylist;
+  final PlaylistLinkPicker linkPicker;
   final LibraryQueryPlayback onPlayQuery;
   final Widget child;
   final Widget Function(
@@ -74,15 +79,32 @@ class LibraryWorkspaceState extends State<LibraryWorkspace> {
     _PageKind.album,
     album.id,
     album.title,
-    (tab) => AlbumPage(
-      album: album,
-      controller: widget.library,
-      onPlay: widget.onPlay,
-      playlists: widget.playlists,
-      onBack: showLibrary,
-      onAlbumRemoved: () => _close(tab),
-      onAlbumChanged: (updated) => _updateAlbum(tab, updated),
-    ),
+    (tab) => switch (album.userPlaylistId) {
+      final id? => PlaylistPage(
+        id: id,
+        repository: widget.playlists,
+        library: widget.library,
+        onPlay: widget.onPlayPlaylist,
+        linkPicker: widget.linkPicker,
+        onBack: () => _close(tab),
+        onAlbumChanged: (updated) {
+          if (!updated.isAlbum) {
+            _close(tab);
+          } else {
+            setState(() => tab.title = updated.name);
+          }
+        },
+      ),
+      null => AlbumPage(
+        album: album,
+        controller: widget.library,
+        onPlay: widget.onPlay,
+        playlists: widget.playlists,
+        onBack: showLibrary,
+        onAlbumRemoved: () => _close(tab),
+        onAlbumChanged: (updated) => _updateAlbum(tab, updated),
+      ),
+    },
   );
 
   void openArtist(LibraryArtist artist) => _open(

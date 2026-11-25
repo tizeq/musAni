@@ -36,6 +36,19 @@ class PlaylistTrackRef {
   );
 }
 
+class UserAlbumMetadata {
+  const UserAlbumMetadata({
+    this.artist = '',
+    this.year = 0,
+    this.genre = '',
+    this.disc = 1,
+  });
+  final String artist;
+  final int year;
+  final String genre;
+  final int disc;
+}
+
 class UserPlaylist {
   const UserPlaylist({
     required this.id,
@@ -45,6 +58,8 @@ class UserPlaylist {
     this.trackCount = 0,
     this.durationMs = 0,
     this.isAlbum = false,
+    this.albumMetadata = const UserAlbumMetadata(),
+    this.albumCoverKey,
   });
   final String id;
   final String name;
@@ -53,6 +68,8 @@ class UserPlaylist {
   final int trackCount;
   final int durationMs;
   final bool isAlbum;
+  final UserAlbumMetadata albumMetadata;
+  final String? albumCoverKey;
 }
 
 enum PlaylistFileState { available, missing, unreadable }
@@ -64,12 +81,18 @@ class PlaylistEntry {
     required this.track,
     required this.fileState,
     this.error,
+    this.albumTrackNumber,
+    this.albumDisc,
+    this.albumConflict,
   });
   final String id;
   final int position;
   final PlaylistTrackRef track;
   final PlaylistFileState fileState;
   final String? error;
+  final int? albumTrackNumber;
+  final int? albumDisc;
+  final String? albumConflict;
   bool get available => fileState == PlaylistFileState.available;
 }
 
@@ -77,7 +100,9 @@ class PlaylistDetail {
   const PlaylistDetail(this.playlist, this.entries);
   final UserPlaylist playlist;
   final List<PlaylistEntry> entries;
-  int get unavailableCount => entries.where((entry) => !entry.available).length;
+  int get unavailableCount => entries
+      .where((entry) => !entry.available && entry.albumConflict == null)
+      .length;
 }
 
 class PlaylistArtwork {
@@ -85,4 +110,20 @@ class PlaylistArtwork {
 
   final Uint8List? image;
   final List<String> trackCovers;
+}
+
+enum AlbumWriteStatus { saved, unsupported, conflict, failed }
+
+class AlbumWriteItem {
+  const AlbumWriteItem(this.path, this.status, {this.message, this.backupPath});
+  final String path;
+  final AlbumWriteStatus status;
+  final String? message;
+  final String? backupPath;
+}
+
+class AlbumWriteReport {
+  const AlbumWriteReport(this.items, {this.catalogWarning});
+  final List<AlbumWriteItem> items;
+  final String? catalogWarning;
 }

@@ -53,6 +53,19 @@ void main() {
       } finally {
         db.close();
       }
+      final path = '${music.path}/0.flac';
+      final firstRead = repository.trackByPath(path);
+      final duplicate = repository.trackByPath(path);
+      final missing = repository.trackByPath('${music.path}/missing.flac');
+      final another = repository.trackByPath('${music.path}/74.flac');
+      expect(identical(firstRead, duplicate), isTrue);
+      expect((await firstRead)?.metadata.artists, [
+        'Tyler, The Creator',
+        'Guest 0',
+      ]);
+      expect(await missing, isNull);
+      expect((await another)?.metadata.title, 'Outside filter');
+
       for (final sort in LibrarySort.values) {
         for (final descending in [false, true]) {
           final query = LibraryQuery(

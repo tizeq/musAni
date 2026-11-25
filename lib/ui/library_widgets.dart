@@ -465,7 +465,6 @@ class LibraryTrackTile extends StatelessWidget {
     required this.track,
     required this.onTap,
     this.coverPath,
-    this.number,
     this.onEdit,
     this.onAddToPlaylist,
     this.onToggleSelection,
@@ -477,7 +476,6 @@ class LibraryTrackTile extends StatelessWidget {
   final LibraryTrack track;
   final VoidCallback onTap;
   final String? coverPath;
-  final String? number;
   final VoidCallback? onEdit;
   final VoidCallback? onAddToPlaylist;
   final VoidCallback? onToggleSelection;
@@ -574,12 +572,7 @@ class LibraryTrackTile extends StatelessWidget {
               checkColor: glass?.onAccent,
               onChanged: (_) => onToggleSelection!(),
             ),
-          number != null
-              ? SizedBox(
-                  width: 32,
-                  child: Text(number!, textAlign: TextAlign.center),
-                )
-              : aurora != null
+          aurora != null
               ? AuroraArtwork(
                   appearance: aurora!,
                   size: 40,
@@ -608,10 +601,7 @@ class LibraryTrackTile extends StatelessWidget {
         appearance: appearance,
       ),
       subtitle: Text(
-        [
-          track.metadata.artist,
-          track.metadata.album,
-        ].where((value) => value.isNotEmpty).join(' · '),
+        track.metadata.artist,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: glass == null

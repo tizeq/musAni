@@ -1,5 +1,18 @@
 # Журнал изменений
 
+## v0.1.1
+
+- Faster incremental library rescans and artist filtering, with optimized SQLite
+  queries and batched metadata loading for the playback queue.
+- More responsive scrolling and navigation in Atmosphere, with fewer widget
+  rebuilds and shared artwork caching.
+- User albums now own shared artwork and metadata, support multiple discs,
+  and automatically renumber tracks when their order or disc changes.
+- Batch writing for MP3 and FLAC album tags, with per-file backups and results
+  for unsupported formats or failed writes.
+- Existing libraries migrate to SQLite schema v6. See the
+  [Linux upgrade guide](docs/linux-release.md) for rollback instructions.
+
 ## v0.1.0-alpha.1
 
 Первый публичный тестовый выпуск для Linux x86-64.

@@ -7,7 +7,11 @@ import '../playlists/models.dart';
 import '../playlists/playlist_repository.dart';
 import 'motion.dart';
 
-typedef PlaylistProperties = ({String name, bool isAlbum});
+typedef PlaylistProperties = ({
+  String name,
+  bool isAlbum,
+  UserAlbumMetadata metadata,
+});
 
 Future<String?> playlistNameDialog(
   BuildContext context, {
@@ -22,14 +26,22 @@ Future<PlaylistProperties?> playlistPropertiesDialog(
   UserPlaylist playlist,
 ) => showAppDialog<PlaylistProperties>(
   context: context,
-  builder: (_) =>
-      _PlaylistNameDialog(initial: playlist.name, album: playlist.isAlbum),
+  builder: (_) => _PlaylistNameDialog(
+    initial: playlist.name,
+    album: playlist.isAlbum,
+    metadata: playlist.albumMetadata,
+  ),
 );
 
 class _PlaylistNameDialog extends StatefulWidget {
-  const _PlaylistNameDialog({this.initial, this.album});
+  const _PlaylistNameDialog({
+    this.initial,
+    this.album,
+    this.metadata = const UserAlbumMetadata(),
+  });
   final String? initial;
   final bool? album;
+  final UserAlbumMetadata metadata;
   @override
   State<_PlaylistNameDialog> createState() => _PlaylistNameDialogState();
 }
@@ -37,25 +49,42 @@ class _PlaylistNameDialog extends StatefulWidget {
 class _PlaylistNameDialogState extends State<_PlaylistNameDialog> {
   late final _name = TextEditingController(text: widget.initial);
   late bool? _album = widget.album;
+  late final _artist = TextEditingController(text: widget.metadata.artist);
+  late final _genre = TextEditingController(text: widget.metadata.genre);
+  late final _year = TextEditingController(
+    text: widget.metadata.year == 0 ? '' : '${widget.metadata.year}',
+  );
+  late final _disc = TextEditingController(text: '${widget.metadata.disc}');
   final _form = GlobalKey<FormState>();
   void _save() {
     if (_form.currentState!.validate())
       Navigator.pop(context, (
         name: _name.text.trim(),
         isAlbum: _album ?? false,
+        metadata: UserAlbumMetadata(
+          artist: _artist.text,
+          genre: _genre.text,
+          year: int.tryParse(_year.text.trim()) ?? 0,
+          disc: int.tryParse(_disc.text.trim()) ?? 1,
+        ),
       ));
   }
 
   @override
   void dispose() {
-    _name.dispose();
+    for (final field in [_name, _artist, _genre, _year, _disc]) {
+      field.dispose();
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => AlertDialog(
+    scrollable: true,
     title: Text(
-      _album != null
+      _album == true
+          ? 'Свойства альбома'
+          : _album != null
           ? 'Свойства плейлиста'
           : widget.initial == null
           ? 'Создать плейлист'
@@ -72,8 +101,10 @@ class _PlaylistNameDialogState extends State<_PlaylistNameDialog> {
               key: const Key('playlist-name'),
               controller: _name,
               autofocus: true,
-              decoration: const InputDecoration(
-                labelText: 'Название плейлиста',
+              decoration: InputDecoration(
+                labelText: _album == true
+                    ? 'Название альбома'
+                    : 'Название плейлиста',
               ),
               maxLength: 200,
               validator: (value) =>
@@ -92,6 +123,32 @@ class _PlaylistNameDialogState extends State<_PlaylistNameDialog> {
                 value: album,
                 onChanged: (value) => setState(() => _album = value),
               ),
+            if (_album == true) ...[
+              TextFormField(
+                controller: _artist,
+                decoration: const InputDecoration(
+                  labelText: 'Исполнитель альбома',
+                ),
+              ),
+              TextFormField(
+                controller: _genre,
+                decoration: const InputDecoration(labelText: 'Жанр'),
+              ),
+              TextFormField(
+                controller: _year,
+                decoration: const InputDecoration(labelText: 'Год выпуска'),
+                keyboardType: TextInputType.number,
+                validator: (value) => _checkAlbumNumber(value, optional: true),
+              ),
+              TextFormField(
+                controller: _disc,
+                decoration: const InputDecoration(
+                  labelText: 'Номер диска по умолчанию',
+                ),
+                keyboardType: TextInputType.number,
+                validator: _checkAlbumNumber,
+              ),
+            ],
           ],
         ),
       ),
@@ -102,6 +159,93 @@ class _PlaylistNameDialogState extends State<_PlaylistNameDialog> {
         child: const Text('Отмена'),
       ),
       FilledButton(onPressed: _save, child: const Text('Сохранить')),
+    ],
+  );
+}
+
+String? _checkAlbumNumber(String? value, {bool optional = false}) {
+  final text = value?.trim() ?? '';
+  if (optional && text.isEmpty) return null;
+  final number = int.tryParse(text);
+  return number == null || number < 1 || number > 9999
+      ? 'Введите число от 1 до 9999'
+      : null;
+}
+
+Future<void> savePlaylistProperties(
+  PlaylistRepository repository,
+  UserPlaylist playlist,
+  PlaylistProperties properties,
+) => properties.isAlbum
+    ? repository.updateAlbum(
+        playlist.id,
+        playlist.revision,
+        properties.name,
+        properties.metadata,
+      )
+    : repository.updateProperties(
+        playlist.id,
+        playlist.revision,
+        name: properties.name,
+        isAlbum: false,
+      );
+
+Future<({int? disc})?> albumDiscDialog(
+  BuildContext context,
+  int? current,
+) async {
+  return showAppDialog<({int? disc})>(
+    context: context,
+    builder: (_) => _AlbumDiscDialog(current),
+  );
+}
+
+class _AlbumDiscDialog extends StatefulWidget {
+  const _AlbumDiscDialog(this.current);
+  final int? current;
+  @override
+  State<_AlbumDiscDialog> createState() => _AlbumDiscDialogState();
+}
+
+class _AlbumDiscDialogState extends State<_AlbumDiscDialog> {
+  final _form = GlobalKey<FormState>();
+  late final _number = TextEditingController(text: widget.current?.toString());
+
+  @override
+  void dispose() {
+    _number.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Номер диска композиции'),
+    content: Form(
+      key: _form,
+      child: TextFormField(
+        controller: _number,
+        autofocus: true,
+        keyboardType: TextInputType.number,
+        decoration: const InputDecoration(
+          labelText: 'Номер диска',
+          helperText: 'Пустое поле использует номер альбома',
+        ),
+        validator: (value) => _checkAlbumNumber(value, optional: true),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Отмена'),
+      ),
+      FilledButton(
+        onPressed: () {
+          if (_form.currentState!.validate()) {
+            Navigator.pop(context, (disc: int.tryParse(_number.text.trim())));
+          }
+        },
+        child: const Text('Сохранить'),
+      ),
     ],
   );
 }

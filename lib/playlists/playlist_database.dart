@@ -35,19 +35,23 @@ extension PlaylistDatabase on LibraryDatabase {
     PRAGMA user_version=5;
   ''');
 
+  Uint8List? _playlistImage(String id) =>
+      _db.select('SELECT image FROM playlist_artwork WHERE playlist_id=?', [
+            id,
+          ]).firstOrNull?['image']
+          as Uint8List?;
+
   PlaylistArtwork playlistArtwork(String id) {
-    final image =
-        _db.select('SELECT image FROM playlist_artwork WHERE playlist_id=?', [
-              id,
-            ]).firstOrNull?['image']
-            as Uint8List?;
+    final image = _playlistImage(id);
     if (image != null) return PlaylistArtwork(image: image);
     return PlaylistArtwork(
       trackCovers: [
         for (final row in _db.select(
           '''
-        SELECT COALESCE(t.cover_key, e.cover_key) AS cover
+        SELECT COALESCE(owner.album_cover_key,t.cover_key,e.cover_key) AS cover
         FROM playlist_entries e LEFT JOIN tracks t ON t.id=e.track_id
+        LEFT JOIN user_album_members m ON m.path=e.path
+        LEFT JOIN playlists owner ON owner.id=m.playlist_id
         WHERE e.playlist_id=? AND e.deleted_at IS NULL
         GROUP BY cover HAVING cover IS NOT NULL
         ORDER BY MIN(e.position), cover LIMIT 4
@@ -64,6 +68,7 @@ extension PlaylistDatabase on LibraryDatabase {
       throw const FormatException('Обложка должна занимать не больше 1 МБ');
     }
     _changePlaylist(id, revision, (_) {
+      if (_isPlaylistAlbum(id)) _setAlbumCoverKey(id, image);
       if (image == null) {
         _db.execute('DELETE FROM playlist_artwork WHERE playlist_id=?', [id]);
       } else {
@@ -112,6 +117,13 @@ extension PlaylistDatabase on LibraryDatabase {
     trackCount: row['track_count'] as int,
     durationMs: row['duration_ms'] as int,
     isAlbum: row['is_album'] == 1,
+    albumCoverKey: row['album_cover_key'] as String?,
+    albumMetadata: UserAlbumMetadata(
+      artist: row['album_artist'] as String,
+      year: row['album_year'] as int,
+      genre: row['album_genre'] as String,
+      disc: row['album_disc'] as int,
+    ),
   );
 
   UserPlaylist createPlaylist(String name) {
@@ -125,11 +137,16 @@ extension PlaylistDatabase on LibraryDatabase {
     return playlists(id: id).single;
   }
 
-  T _changePlaylist<T>(String id, int revision, T Function(int now) change) {
+  T _changePlaylist<T>(
+    String id,
+    int revision,
+    T Function(int now) change, {
+    bool refreshMembers = false,
+  }) {
     _db.execute('BEGIN IMMEDIATE');
     try {
       final row = _db.select(
-        'SELECT revision,updated_at FROM playlists WHERE id=? AND deleted_at IS NULL',
+        'SELECT revision,updated_at,is_album FROM playlists WHERE id=? AND deleted_at IS NULL',
         [id],
       ).firstOrNull;
       if (row == null)
@@ -147,7 +164,10 @@ extension PlaylistDatabase on LibraryDatabase {
         'UPDATE playlists SET revision=revision+1,updated_at=? WHERE id=?',
         [now, id],
       );
+      final affectsAlbum = row['is_album'] == 1 || _isPlaylistAlbum(id);
+      if (affectsAlbum && refreshMembers) _rebuildAlbumMembers();
       _db.execute('COMMIT');
+      albumChanged = albumChanged || affectsAlbum;
       return result;
     } catch (_) {
       _db.execute('ROLLBACK');
@@ -162,14 +182,58 @@ extension PlaylistDatabase on LibraryDatabase {
     bool? isAlbum,
   }) {
     final valid = _playlistName(name);
-    _changePlaylist(
-      id,
-      revision,
-      (_) => _db.execute(
+    _changePlaylist(id, revision, (_) {
+      final wasAlbum = _isPlaylistAlbum(id);
+      if (isAlbum == true && !wasAlbum) _enableUserAlbum(id);
+      _db.execute(
         'UPDATE playlists SET name=?,is_album=COALESCE(?,is_album) WHERE id=?',
         [valid, isAlbum == null ? null : (isAlbum ? 1 : 0), id],
-      ),
-    );
+      );
+      if (isAlbum ?? wasAlbum) {
+        final row = playlists(id: id).single;
+        _storeAlbumFields(id, valid, row.albumMetadata);
+      }
+    }, refreshMembers: isAlbum != null);
+  }
+
+  void _normalizeUserAlbumPaths(String id) {
+    for (final row in _db.select(
+      'SELECT id,path FROM playlist_entries WHERE playlist_id=? AND deleted_at IS NULL',
+      [id],
+    )) {
+      final original = row['path'] as String;
+      final canonical = _albumPath(original);
+      if (canonical != original) {
+        _db.execute(
+          'UPDATE playlist_entries SET path=?,track_id=(SELECT id FROM tracks WHERE path=?) WHERE id=?',
+          [canonical, canonical, row['id']],
+        );
+      }
+    }
+  }
+
+  void _enableUserAlbum(String id) {
+    _normalizeUserAlbumPaths(id);
+    final conflict = _db
+        .select(
+          '''
+        SELECT p.name FROM playlist_entries e
+        JOIN user_album_members m ON m.path=e.path
+        JOIN playlists p ON p.id=m.playlist_id
+        WHERE e.playlist_id=? AND e.deleted_at IS NULL LIMIT 1
+      ''',
+          [id],
+        )
+        .firstOrNull;
+    if (conflict != null) {
+      throw StateError(
+        'Один из треков уже входит в альбом «${conflict['name']}». '
+        'Удалите конфликтующую запись перед преобразованием.',
+      );
+    }
+    final image = _playlistImage(id);
+    _setAlbumCoverKey(id, image);
+    _db.execute('UPDATE playlists SET is_album=1 WHERE id=?', [id]);
   }
 
   void deletePlaylist(String id, int revision) =>
@@ -180,18 +244,48 @@ extension PlaylistDatabase on LibraryDatabase {
           'UPDATE playlist_entries SET deleted_at=?,updated_at=? WHERE playlist_id=? AND deleted_at IS NULL',
           [now, now, id],
         );
-      });
+      }, refreshMembers: true);
 
-  PlaylistTrackRef _playlistRef(PlaylistTrackRef ref) {
-    final catalog = trackByPath(ref.path);
+  String _albumPath(String path) {
+    try {
+      return File(path).resolveSymbolicLinksSync();
+    } on FileSystemException {
+      return p.normalize(path);
+    }
+  }
+
+  PlaylistTrackRef _playlistRef(
+    PlaylistTrackRef ref,
+    String path,
+    LibraryTrack? catalog,
+  ) {
     if (catalog != null) return PlaylistTrackRef.fromLibrary(catalog);
     // Directly opened files may not be in the library. Read their duration and
     // labels once in this worker; an existing missing reference keeps its snapshot.
-    if (ref.durationMs == 0 && File(ref.path).existsSync()) {
-      final metadata = TagLibMetadataReader().read(ref.path, coverDirectory);
+    final snapshot = _db
+        .select(
+          '''
+      SELECT e.title,e.artists,e.duration_ms,e.cover_key
+      FROM user_album_members m JOIN playlist_entries e ON e.id=m.entry_id WHERE m.path=?
+    ''',
+          [path],
+        )
+        .firstOrNull;
+    if (snapshot != null) {
+      return PlaylistTrackRef(
+        path: path,
+        title: snapshot['title'] as String,
+        artists: (jsonDecode(snapshot['artists'] as String) as List)
+            .cast<String>(),
+        durationMs: snapshot['duration_ms'] as int,
+        coverKey: snapshot['cover_key'] as String?,
+      );
+    }
+    if (ref.durationMs == 0 && File(path).existsSync()) {
+      final metadata = TagLibMetadataReader().read(path, coverDirectory);
       if (metadata.durationMs > 0)
         return PlaylistTrackRef(
-          path: ref.path,
+          path: path,
           title: metadata.title,
           artists: metadata.artists,
           durationMs: metadata.durationMs,
@@ -199,7 +293,7 @@ extension PlaylistDatabase on LibraryDatabase {
         );
     }
     return PlaylistTrackRef(
-      path: ref.path,
+      path: path,
       title: ref.title,
       artists: ref.artists,
       durationMs: ref.durationMs,
@@ -214,23 +308,32 @@ extension PlaylistDatabase on LibraryDatabase {
         'SELECT COALESCE(MAX(position),-1)+1 FROM playlist_entries WHERE playlist_id=? AND deleted_at IS NULL',
         [id],
       );
-      for (final input in refs) {
-        if (!p.isAbsolute(input.path) ||
-            !LocalTracks.extensions.contains(
-              p.extension(input.path).replaceFirst('.', '').toLowerCase(),
-            )) {
-          throw const FormatException(
-            'Нужен локальный аудиофайл поддерживаемого формата',
-          );
-        }
-        final ref = _playlistRef(input);
-        _db.execute(
-          '''
-          INSERT INTO playlist_entries(id,playlist_id,track_id,path,title,artists,duration_ms,cover_key,position,created_at,updated_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?)
-        ''',
-          [
-            _newPlaylistId(),
+      final album = _isPlaylistAlbum(id);
+      final paths = [
+        for (final input in refs)
+          album && p.isAbsolute(input.path)
+              ? _albumPath(input.path)
+              : input.path,
+      ];
+      final catalog = _tracksByPath(paths.toSet().toList(), 'tracks');
+      final insert = _db.prepare('''
+        INSERT INTO playlist_entries(id,playlist_id,track_id,path,title,artists,duration_ms,cover_key,position,created_at,updated_at)
+        VALUES (lower(hex(randomblob(16))),?,?,?,?,?,?,?,?,?,?)
+      ''');
+      try {
+        for (final (index, input) in refs.indexed) {
+          final path = paths[index];
+          if (!p.isAbsolute(path) ||
+              !LocalTracks.extensions.contains(
+                p.extension(path).replaceFirst('.', '').toLowerCase(),
+              )) {
+            throw const FormatException(
+              'Нужен локальный аудиофайл поддерживаемого формата',
+            );
+          }
+          if (album) _checkAlbumEntry(id, path);
+          final ref = _playlistRef(input, path, catalog[path]);
+          insert.execute([
             id,
             ref.trackId,
             ref.path,
@@ -241,10 +344,12 @@ extension PlaylistDatabase on LibraryDatabase {
             position++,
             now,
             now,
-          ],
-        );
+          ]);
+        }
+      } finally {
+        insert.dispose();
       }
-    });
+    }, refreshMembers: true);
   }
 
   PlaylistDetail playlistDetail(String id) {
@@ -258,10 +363,16 @@ extension PlaylistDatabase on LibraryDatabase {
       SELECT e.id, e.position, COALESCE(t.id,e.track_id) track_id,
         COALESCE(t.path,e.path) path, COALESCE(t.title,e.title) title,
         COALESCE(t.duration_ms,e.duration_ms) duration_ms,
-        CASE WHEN t.id IS NULL THEN e.cover_key ELSE t.cover_key END cover_key,
+        COALESCE(owner.album_cover_key,
+          CASE WHEN t.id IS NULL THEN e.cover_key ELSE t.cover_key END) cover_key,
+        CASE WHEN m.entry_id=e.id THEN m.disc END album_disc,
+        CASE WHEN m.entry_id=e.id THEN m.number END album_number,
+        CASE WHEN m.entry_id<>e.id THEN owner.name END album_conflict,
         CASE WHEN t.id IS NULL THEN e.artists ELSE ${LibraryDatabase._trackArtistsJson} END artists
       FROM playlist_entries e
       LEFT JOIN tracks t ON t.id=COALESCE(e.track_id, (SELECT id FROM tracks WHERE path=e.path))
+      LEFT JOIN user_album_members m ON m.path=e.path
+      LEFT JOIN playlists owner ON owner.id=m.playlist_id
       WHERE e.playlist_id=? AND e.deleted_at IS NULL ORDER BY e.position,e.id
       ''',
       [id],
@@ -286,6 +397,13 @@ extension PlaylistDatabase on LibraryDatabase {
           track: ref,
           fileState: state,
           error: error,
+          albumDisc: playlist.isAlbum ? row['album_disc'] as int? : null,
+          albumTrackNumber: playlist.isAlbum
+              ? row['album_number'] as int?
+              : null,
+          albumConflict: playlist.isAlbum
+              ? row['album_conflict'] as String?
+              : null,
         ),
       );
     }
@@ -329,11 +447,15 @@ extension PlaylistDatabase on LibraryDatabase {
   ];
 
   void _orderPlaylist(String id, List<String> entries, int now) {
-    for (var index = 0; index < entries.length; index++) {
-      _db.execute(
-        'UPDATE playlist_entries SET position=?,updated_at=? WHERE id=? AND playlist_id=? AND deleted_at IS NULL AND position<>?',
-        [index, now, entries[index], id, index],
-      );
+    final statement = _db.prepare(
+      'UPDATE playlist_entries SET position=?,updated_at=? WHERE id=? AND playlist_id=? AND deleted_at IS NULL AND position<>?',
+    );
+    try {
+      for (var index = 0; index < entries.length; index++) {
+        statement.execute([index, now, entries[index], id, index]);
+      }
+    } finally {
+      statement.dispose();
     }
   }
 
@@ -348,7 +470,7 @@ extension PlaylistDatabase on LibraryDatabase {
           );
         }
         _orderPlaylist(id, entries, now);
-      });
+      }, refreshMembers: true);
 
   void removePlaylistEntry(String id, int revision, String entryId) =>
       _changePlaylist(id, revision, (now) {
@@ -360,7 +482,7 @@ extension PlaylistDatabase on LibraryDatabase {
           [now, now, entryId, id],
         );
         _orderPlaylist(id, ids, now);
-      });
+      }, refreshMembers: true);
 
   Future<void> relinkPlaylistEntry(
     String id,
@@ -385,8 +507,12 @@ extension PlaylistDatabase on LibraryDatabase {
         'Не удалось проверить аудиофайл. Выберите исправный доступный файл.',
       );
     }
-    final catalog = trackByPath(canonical);
+    final catalog = _db.select('SELECT id FROM tracks WHERE path=?', [
+      canonical,
+    ]).firstOrNull;
     _changePlaylist(id, revision, (now) {
+      if (_isPlaylistAlbum(id))
+        _checkAlbumEntry(id, canonical, exceptEntry: entryId);
       if (!_playlistEntryIds(id).contains(entryId))
         throw StateError('Запись больше не находится в плейлисте');
       _db.execute(
@@ -396,7 +522,7 @@ extension PlaylistDatabase on LibraryDatabase {
       ''',
         [
           canonical,
-          catalog?.id,
+          catalog?['id'],
           metadata.title,
           jsonEncode(metadata.artists),
           metadata.durationMs,
@@ -406,6 +532,6 @@ extension PlaylistDatabase on LibraryDatabase {
           id,
         ],
       );
-    });
+    }, refreshMembers: true);
   }
 }
